@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
+BOLD="\033[1m"
+CYAN="\033[36m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+DIM="\033[2m"
+RESET="\033[0m"
+
 echo ""
 echo "  capto@linux-lab:~\$ come learn linux"
 echo "  installing lnxx..."
@@ -57,7 +64,11 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
   echo "  then run:  source ~/.bashrc  (or open a new terminal)"
   echo "  then run:  lnxx"
 else
-  echo "  run it now with:  lnxx"
+  echo -e "  ${BOLD}${CYAN}┌─────────────────────────────────────┐${RESET}"
+  echo -e "  ${BOLD}${CYAN}│                                     │${RESET}"
+  echo -e "  ${BOLD}${CYAN}│   run it now:  ${GREEN}lnxx${CYAN}                │${RESET}"
+  echo -e "  ${BOLD}${CYAN}│                                     │${RESET}"
+  echo -e "  ${BOLD}${CYAN}└─────────────────────────────────────┘${RESET}"
 fi
 
 echo ""
