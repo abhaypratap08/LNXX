@@ -7,6 +7,7 @@ No external dependencies. Python 3.8+.
 """
 
 import json
+import io
 import os
 import random
 import re
@@ -16,6 +17,7 @@ import textwrap
 import time
 import tempfile
 import unittest
+from unittest.mock import patch
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2014,9 +2016,8 @@ class TrainerApp:
             if out:
                 print(UI.c("  " + out.replace("\n", "\n  "), UI.WHITE))
             if self._lesson_success(active, raw, out):
-                was_new = active.command not in self.quiz_answered
                 passed  = self._ask_quiz(active)
-                if passed and was_new:
+                if passed:
                     nxt = self._next_lesson(active)
                     if nxt:
                         print()
@@ -2049,24 +2050,27 @@ class TrainerApp:
             print(UI.c(f"  ⚡ Pro tip: {lesson.pro_tip}", UI.MAGENTA))
 
     def _ask_quiz(self, lesson: Lesson) -> bool:
-        """Return True if the quiz was passed (including if already answered before)."""
-        if lesson.command in self.quiz_answered:
-            return True
+        """Return True if the quiz was passed."""
         quiz = QUIZ_QUESTIONS.get(lesson.command)
         if not quiz:
             return True  # no quiz for this lesson — consider it passed
+        already_answered = lesson.command in self.quiz_answered
         print()
-        print(UI.c("  ── Capto checkpoint ──", UI.BOLD + UI.YELLOW))
+        label = "Capto checkpoint" if not already_answered else "Capto checkpoint review"
+        print(UI.c(f"  ── {label} ──", UI.BOLD + UI.YELLOW))
         print(f"  {quiz['q']}")
         answer = input(UI.c("  Answer › ", UI.CYAN)).strip().lower()
         if any(k in answer for k in quiz["keys"]):
-            self.quiz_answered.add(lesson.command)
-            new_lvl = self.shell.add_xp(15)
-            self.shell.score += 5
-            self.shell.accomplished_commands.append(f"concept:{lesson.command}")
-            print(UI.c("  ✓ Correct. +15 XP", UI.GREEN))
-            if new_lvl:
-                self._level_up_banner(new_lvl)
+            if already_answered:
+                print(UI.c("  ✓ Correct. Review complete.", UI.GREEN))
+            else:
+                self.quiz_answered.add(lesson.command)
+                new_lvl = self.shell.add_xp(15)
+                self.shell.score += 5
+                self.shell.accomplished_commands.append(f"concept:{lesson.command}")
+                print(UI.c("  ✓ Correct. +15 XP", UI.GREEN))
+                if new_lvl:
+                    self._level_up_banner(new_lvl)
             print(UI.c(f"  {random.choice(AFFIRMATIONS)}", UI.BOLD + UI.YELLOW))
             self._compact_status()
             self._save()
@@ -2743,6 +2747,51 @@ class LinuxxTests(unittest.TestCase):
         self.assertTrue(app._command_matches("ls|wc -l", ["ls | wc -l"]))
         self.assertTrue(app._command_matches("grep -i \"error\" log.txt", ["grep -i error log.txt"]))
         self.assertFalse(app._command_matches("rm other.txt", ["rm temp.txt"]))
+
+    def test_quiz_review_still_prompts_without_duplicate_xp(self):
+        app = self.make_app()
+        app.quiz_answered.add("pwd")
+        app.shell.xp = 100
+        app.shell.score = 25
+        app._save = lambda: None
+
+        with patch("builtins.input", return_value="working directory") as mocked_input:
+            with patch("sys.stdout", new=io.StringIO()) as out:
+                self.assertTrue(app._ask_quiz(LESSONS[0]))
+
+        mocked_input.assert_called_once()
+        self.assertIn("Capto checkpoint review", out.getvalue())
+        self.assertIn("Review complete", out.getvalue())
+        self.assertEqual(app.shell.xp, 100)
+        self.assertEqual(app.shell.score, 25)
+        self.assertEqual(app.shell.accomplished_commands, [])
+
+    def test_quiz_first_pass_awards_xp(self):
+        app = self.make_app()
+        app._save = lambda: None
+
+        with patch("builtins.input", return_value="working directory"):
+            with patch("sys.stdout", new=io.StringIO()):
+                self.assertTrue(app._ask_quiz(LESSONS[0]))
+
+        self.assertIn("pwd", app.quiz_answered)
+        self.assertEqual(app.shell.xp, 15)
+        self.assertEqual(app.shell.score, 5)
+        self.assertIn("concept:pwd", app.shell.accomplished_commands)
+
+    def test_show_lesson_prompts_quiz_after_successful_command(self):
+        app = self.make_app()
+        app._save = lambda: None
+        answers = iter(["pwd", "working directory", "back"])
+
+        with patch("builtins.input", lambda prompt="": next(answers)):
+            with patch("sys.stdout", new=io.StringIO()) as out:
+                app.show_lesson(LESSONS[0])
+
+        text = out.getvalue()
+        self.assertIn("What does pwd stand for", text)
+        self.assertIn("Capto checkpoint", text)
+        self.assertIn("Up next: ls", text)
 
     def test_app_helpers(self):
         shell2 = FakeShell()
