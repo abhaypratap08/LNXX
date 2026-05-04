@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Come Learn Linux with Capto - Enhanced Edition
-Run:     python3 capto_linux.py
-Tests:   python3 capto_linux.py --test
+Run:     python3 linuxx.py
+Tests:   python3 linuxx.py --test
 No external dependencies. Python 3.8+.
 """
 
@@ -14,8 +14,10 @@ import shlex
 import sys
 import textwrap
 import time
+import tempfile
+import unittest
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 SAVE_FILE = os.path.expanduser("~/.capto_progress.json")
 
@@ -646,6 +648,45 @@ AFFIRMATIONS = [
     "You're building muscle memory. That's the whole game.",
     "Real one. No IDE. Just the terminal.",
     "That's the one. Clean and correct.",
+    "Capto is proud of his students. Especially the ones who type Linux commands like this.",
+    "Capto saw that command and quietly nodded.",
+    "Linux did not scare you today. Good.",
+    "abhaypratap would approve this terminal behavior.",
+    "what are you trying to rizz travis travolds ?",
+    "This is the kind of Linux confidence Capto was built for.",
+    "abhaypratap put the mission there, you handled it.",
+    "Capto says: no panic, just pathnames.",
+    "That command had clean Linux energy.",
+    "You are not memorizing anymore, you are operating.",
+    "Capto is writing this one down as progress.",
+    "Linux shell looking less mysterious by the minute.",
+    "abhaypratap did not build LNXX for weak attempts. This was solid.",
+    "Capto rates that command: dangerously competent.",
+    "You just made the terminal blink first.",
+    "That was not luck. That was Linux muscle memory loading.",
+    "Capto is proud, but he will act normal about it.",
+    "abhaypratap's student arc is getting serious.",
+    "Tiny command, big operator behavior.",
+    "Linux unlocked one more door for you.",
+    "Capto saw no hesitation there.",
+    "You are slowly becoming the person people ask for terminal help.",
+    "That answer had root-user confidence without root-user recklessness.",
+    "abhaypratap would call that clean execution.",
+    "Capto is proud of his students, and this quiz answer proves why.",
+    "Linux checkpoint cleared. Capto is watching the glow-up.",
+    "abhaypratap asked for learning, you brought command-line discipline.",
+    "Capto says that answer was not a guess, that was Linux sense.",
+    "Linux quiz survived. Student confidence increased.",
+    "abhaypratap's LNXX student just passed another checkpoint.",
+    "Capto is proud of this answer. Do not let it go to your head.",
+    "Linux concepts are starting to stick. Capto noticed.",
+    "abhaypratap would save this one under clean quiz wins.",
+    "Capto checkpoint cleared with actual brainpower.",
+    "That was Linux understanding, not copy-paste energy.",
+    "Capto approves. The terminal classroom remains undefeated.",
+    "abhaypratap did not sneak that quiz in for nothing.",
+    "Linux knowledge loading. Capto likes the progress bar.",
+    "Capto is proud of his students when the answer hits like that.",
 ]
 
 TIPS_OF_THE_DAY = [
@@ -785,10 +826,27 @@ class FakeShell:
     def _clone(self, node: Node) -> Node:
         return Node(node.type, node.content, {k: self._clone(v) for k, v in node.children.items()}, node.executable)
 
+    def _shell_tokens(self, raw: str, redirects: bool = False) -> Tuple[Optional[List[str]], Optional[str]]:
+        try:
+            if redirects:
+                lexer = shlex.shlex(raw, posix=True, punctuation_chars=">")
+                lexer.whitespace_split = True
+                return list(lexer), None
+            return shlex.split(raw), None
+        except ValueError as e:
+            return None, f"syntax error: {e}"
+
+    def _is_descendant(self, child: List[str], parent: List[str]) -> bool:
+        return len(child) > len(parent) and child[:len(parent)] == parent
+
     def run(self, raw: str) -> str:
         raw = raw.strip()
         if not raw:
             return ""
+        if raw == "!!":
+            if not self.command_log:
+                return "bash: !!: event not found"
+            raw = self.command_log[-1]
         self.commands_run += 1
         self.command_log.append(raw)
 
@@ -796,10 +854,19 @@ class FakeShell:
         if "|" in raw:
             return self._run_pipe(raw)
 
-        try:
-            args = shlex.split(raw)
-        except ValueError as e:
-            return f"syntax error: {e}"
+        redirect_args, redirect_error = self._shell_tokens(raw, redirects=True)
+        if redirect_error:
+            return redirect_error
+
+        # Redirect: echo text > file  /  cat > file
+        if redirect_args and any(token in (">", ">>") for token in redirect_args):
+            return self._handle_redirect(redirect_args)
+
+        args, parse_error = self._shell_tokens(raw)
+        if parse_error:
+            return parse_error
+        if not args:
+            return ""
 
         cmd = args[0]
         rest = args[1:]
@@ -823,6 +890,7 @@ class FakeShell:
             "chmod": self.cmd_chmod,
             "ps":    self.cmd_ps,
             "kill":  self.cmd_kill,
+            "history": self.cmd_history,
             "clear": lambda _: "__CLEAR__",
             "reset": lambda _: self._do_reset(),
             "help":  lambda _: self._help(),
@@ -832,10 +900,6 @@ class FakeShell:
             "nvim":  lambda a: f"__EDITOR__:vim:{a[0] if a else ''}",
             "vi":    lambda a: f"__EDITOR__:vim:{a[0] if a else ''}",
         }
-
-        # Redirect: echo text > file  /  cat > file
-        if ">" in raw:
-            return self._handle_redirect(raw)
 
         if cmd not in handlers:
             return f"{cmd}: command not found. Type help for available commands."
@@ -872,6 +936,8 @@ class FakeShell:
                 result = self.cmd_ls(rest)
             elif cmd == "ps":
                 result = self.cmd_ps(rest)
+            elif cmd == "history":
+                result = self.cmd_history(rest)
             elif cmd == "echo":
                 result = self.cmd_echo(rest)
             elif cmd == "sort":
@@ -892,40 +958,68 @@ class FakeShell:
     def _help(self) -> str:
         return (
             "Available commands: pwd, ls, cd, mkdir, touch, cat, echo, cp, mv, rm,\n"
-            "                    grep, find, wc, head, tail, chmod, ps, kill\n"
+            "                    grep, find, wc, head, tail, chmod, ps, kill, history\n"
             "Editors:            nano <file>   vim <file>   vi <file>   nvim <file>\n"
             "Redirect:           echo text > file   echo text >> file   cat > file\n"
-            "Special:            clear, reset (restore filesystem), help\n"
+            "Special:            !! (repeat last command), clear, reset (restore filesystem), help\n"
             "Piping:             command1 | command2  (chain commands)"
         )
 
-    def _handle_redirect(self, raw: str) -> str:
+    def _handle_redirect(self, args: List[str]) -> str:
         """Handle  cmd > file  and  cmd >> file  redirects."""
-        append = ">>" in raw
-        sep = ">>" if append else ">"
-        parts = raw.split(sep, 1)
-        if len(parts) != 2:
+        redirect_positions = [i for i, token in enumerate(args) if token in (">", ">>")]
+        if len(redirect_positions) != 1:
             return "redirect: syntax error"
-        left  = parts[0].strip()
-        fpath = parts[1].strip().strip("'\"")
+        pos = redirect_positions[0]
+        if pos == 0 or pos + 1 >= len(args) or pos + 2 != len(args):
+            return "redirect: syntax error"
+
+        append = args[pos] == ">>"
+        left_args = args[:pos]
+        fpath = args[pos + 1]
         if not fpath:
             return "redirect: missing filename"
-        # execute the left side to get its output
-        try:
-            out_text = self.run(left)
-        except Exception as e:
-            return str(e)
+
+        if left_args == ["cat"]:
+            out_text = ""
+        else:
+            out_text = self._run_args(left_args)
+
         if out_text.startswith("__"):
             return "redirect: cannot redirect special commands"
         parent, name = self._parent_and_name(fpath)
         if not parent or parent.type != "dir":
             return f"bash: {fpath}: No such file or directory"
+        existing_node = parent.children.get(name)
+        if existing_node and existing_node.type == "dir":
+            return f"bash: {fpath}: Is a directory"
         if append:
-            existing = parent.children.get(name, Node("file")).content
+            existing = existing_node.content if existing_node else ""
             parent.children[name] = Node("file", content=existing + out_text + "\n")
         else:
             parent.children[name] = Node("file", content=out_text + "\n")
         return ""
+
+    def _run_args(self, args: List[str]) -> str:
+        cmd = args[0]
+        rest = args[1:]
+        handlers = {
+            "pwd":   self.cmd_pwd,
+            "ls":    self.cmd_ls,
+            "cat":   self.cmd_cat,
+            "echo":  self.cmd_echo,
+            "grep":  self.cmd_grep,
+            "find":  self.cmd_find,
+            "wc":    self.cmd_wc,
+            "head":  self.cmd_head,
+            "tail":  self.cmd_tail,
+            "ps":    self.cmd_ps,
+            "history": self.cmd_history,
+            "help":  lambda _: self._help(),
+        }
+        if cmd not in handlers:
+            return f"{cmd}: command not found. Type help for available commands."
+        return handlers[cmd](rest)
 
     def _do_reset(self) -> str:
         self.reset_fs()
@@ -1051,9 +1145,14 @@ class FakeShell:
             return f"cp: cannot stat '{src}': No such file or directory"
         if src_node.type == "dir" and not recursive:
             return f"cp: -r not specified; omitting directory '{src}'"
-        parent, name = self._parent_and_name(dst)
-        if not parent or parent.type != "dir":
-            return f"cp: cannot create '{dst}': No such directory"
+        dst_node = self._get_abs(self._resolve(dst))
+        if dst_node and dst_node.type == "dir":
+            parent = dst_node
+            name = self._resolve(src)[-1]
+        else:
+            parent, name = self._parent_and_name(dst)
+            if not parent or parent.type != "dir":
+                return f"cp: cannot create '{dst}': No such directory"
         parent.children[name] = self._clone(src_node)
         return ""
 
@@ -1065,7 +1164,13 @@ class FakeShell:
         src_parent, src_name = self._parent_and_name(src)
         if not src_parent or src_name not in src_parent.children:
             return f"mv: cannot stat '{src}': No such file or directory"
-        dst_node = self._get_abs(self._resolve(dst))
+        src_parts = self._resolve(src)
+        dst_parts = self._resolve(dst)
+        if dst_parts == src_parts:
+            return f"mv: '{src}' and '{dst}' are the same file"
+        if self._is_descendant(dst_parts, src_parts):
+            return f"mv: cannot move '{src}' to a subdirectory of itself, '{dst}'"
+        dst_node = self._get_abs(dst_parts)
         if dst_node and dst_node.type == "dir":
             # move INTO that directory
             dst_parent = dst_node
@@ -1080,13 +1185,17 @@ class FakeShell:
     def cmd_rm(self, args: List[str]) -> str:
         if not args:
             return "rm: missing operand"
-        recursive = any(re.match(r"^-[rRf]+$", a) for a in args if a.startswith("-"))
+        recursive = any(a.startswith("-") and ("r" in a or "R" in a) for a in args)
+        force = any(a.startswith("-") and "f" in a for a in args)
         targets = [a for a in args if not a.startswith("-")]
+        if not targets:
+            return "" if force else "rm: missing operand"
         out = []
         for path in targets:
             parent, name = self._parent_and_name(path)
             if not parent or name not in parent.children:
-                out.append(f"rm: cannot remove '{path}': No such file or directory")
+                if not force:
+                    out.append(f"rm: cannot remove '{path}': No such file or directory")
                 continue
             node = parent.children[name]
             if node.type == "dir" and not recursive:
@@ -1296,7 +1405,7 @@ class FakeShell:
             "  PID TTY      STAT  COMMAND\n"
             "    1 ?        Ss    init\n"
             "  101 pts/0    S     bash\n"
-            "  248 pts/0    R     python3 capto_linux.py\n"
+            "  248 pts/0    R     python3 linuxx.py\n"
             "  404 ?        S     fake-nginx\n"
             "  512 ?        Sl    fake-postgres"
         )
@@ -1308,6 +1417,17 @@ class FakeShell:
         if not pid.isdigit():
             return f"kill: {pid}: arguments must be process IDs"
         return f"[simulation] Process {pid} terminated."
+
+    def cmd_history(self, args: List[str]) -> str:
+        limit = len(self.command_log)
+        if args and args[0].isdigit():
+            limit = max(0, int(args[0]))
+        start = max(0, len(self.command_log) - limit)
+        rows = [
+            f"{i:>5}  {cmd}"
+            for i, cmd in enumerate(self.command_log[start:], start + 1)
+        ]
+        return "\n".join(rows)
 
     def add_xp(self, amount: int) -> Optional[int]:
         """Add XP and return new level if leveled up, else None."""
@@ -1662,6 +1782,31 @@ class VimEditor:
 
 # ─────────────────────────── Progress Persistence ───────────────────────────
 
+def node_to_dict(node: Node) -> Dict[str, Any]:
+    return {
+        "type": node.type,
+        "content": node.content,
+        "executable": node.executable,
+        "children": {name: node_to_dict(child) for name, child in node.children.items()},
+    }
+
+
+def node_from_dict(data: Dict[str, Any]) -> Node:
+    node = Node(
+        data.get("type", "file"),
+        content=data.get("content", ""),
+        executable=bool(data.get("executable", False)),
+    )
+    children = data.get("children", {})
+    if isinstance(children, dict):
+        node.children = {
+            name: node_from_dict(child)
+            for name, child in children.items()
+            if isinstance(child, dict)
+        }
+    return node
+
+
 def save_progress(shell: FakeShell, quiz_answered: set) -> None:
     data = {
         "xp": shell.xp,
@@ -1672,6 +1817,9 @@ def save_progress(shell: FakeShell, quiz_answered: set) -> None:
         "command_log": shell.command_log[-200:],
         "quiz_answered": list(quiz_answered),
         "streak": shell.streak,
+        "filesystem": node_to_dict(shell.root),
+        "cwd": shell.cwd,
+        "prev_cwd": shell.prev_cwd,
     }
     try:
         with open(SAVE_FILE, "w") as f:
@@ -1693,6 +1841,17 @@ def load_progress(shell: FakeShell, quiz_answered: set) -> None:
         shell.accomplished_commands = data.get("accomplished_commands", [])
         shell.command_log = data.get("command_log", [])
         shell.streak = data.get("streak", 0)
+        filesystem = data.get("filesystem")
+        if isinstance(filesystem, dict):
+            shell.root = node_from_dict(filesystem)
+            cwd = data.get("cwd", ["home", "student"])
+            if isinstance(cwd, list) and shell._get_abs(cwd) and shell._get_abs(cwd).type == "dir":
+                shell.cwd = [str(part) for part in cwd]
+            prev_cwd = data.get("prev_cwd")
+            if isinstance(prev_cwd, list) and shell._get_abs(prev_cwd) and shell._get_abs(prev_cwd).type == "dir":
+                shell.prev_cwd = [str(part) for part in prev_cwd]
+            else:
+                shell.prev_cwd = None
         quiz_answered.update(data.get("quiz_answered", []))
     except Exception:
         pass
@@ -1949,6 +2108,60 @@ class TrainerApp:
     def _normalize(self, cmd: str) -> str:
         return " ".join(cmd.strip().split())
 
+    def _command_signature(self, cmd: str) -> Optional[Tuple[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[str, ...]], ...]]:
+        try:
+            lexer = shlex.shlex(cmd, posix=True, punctuation_chars="|")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return None
+        if not tokens:
+            return None
+
+        segments: List[List[str]] = [[]]
+        for token in tokens:
+            if token == "|":
+                segments.append([])
+            else:
+                segments[-1].append(token)
+        if any(not segment for segment in segments):
+            return None
+        return tuple(self._simple_command_signature(segment) for segment in segments)
+
+    def _simple_command_signature(self, tokens: List[str]) -> Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[str, ...]]:
+        value_options = {"-n", "-name", "-type"}
+        cmd = tokens[0]
+        flags: List[str] = []
+        option_pairs: List[Tuple[str, str]] = []
+        operands: List[str] = []
+        i = 1
+        while i < len(tokens):
+            token = tokens[i]
+            if token in value_options and i + 1 < len(tokens):
+                option_pairs.append((token, tokens[i + 1]))
+                i += 2
+            elif token.startswith("--") and len(token) > 2:
+                flags.append(token)
+                i += 1
+            elif token.startswith("-") and len(token) > 1:
+                flags.extend(f"-{char}" for char in token[1:])
+                i += 1
+            else:
+                operands.append(token)
+                i += 1
+        return cmd, tuple(sorted(flags)), tuple(sorted(option_pairs)), tuple(operands)
+
+    def _command_matches(self, raw: str, accepted_commands: List[str]) -> bool:
+        raw_norm = self._normalize(raw)
+        accepted_norm = [self._normalize(cmd) for cmd in accepted_commands]
+        if raw_norm in accepted_norm:
+            return True
+
+        raw_sig = self._command_signature(raw)
+        if raw_sig is None:
+            return False
+        return any(raw_sig == self._command_signature(cmd) for cmd in accepted_commands)
+
     def _run_mission(self, lesson: Lesson, mission: Mission):
         attempts = 0
         while True:
@@ -1969,8 +2182,7 @@ class TrainerApp:
             if out:
                 print(UI.c("  " + out.replace("\n", "\n  "), UI.WHITE))
 
-            accepted = [self._normalize(x) for x in mission.accepted]
-            if self._normalize(raw) in accepted:
+            if self._command_matches(raw, mission.accepted):
                 key = self._mission_key(lesson, mission)
                 if key not in self.shell.completed:
                     self.shell.completed.add(key)
@@ -2004,9 +2216,9 @@ class TrainerApp:
         print(UI.box("Sandbox Terminal",
             "Safe simulated shell. Your real filesystem is untouched.\n"
             "Commands: pwd, ls, cd, mkdir, touch, cat, echo, cp, mv, rm,\n"
-            "          grep, find, wc, head, tail, chmod, ps, kill\n"
+            "          grep, find, wc, head, tail, chmod, ps, kill, history\n"
             "Pipes:    command1 | command2\n"
-            "Special:  reset (restore files), help, back (exit sandbox)"))
+            "Special:  !! (repeat last), reset (restore files), help, back (exit sandbox)"))
         print()
         while True:
             try:
@@ -2059,11 +2271,11 @@ class TrainerApp:
                 print(UI.c(f"  Skipped. Accepted: {mission.accepted[0]}", UI.YELLOW))
                 print()
                 continue
-            accepted = [self._normalize(x) for x in mission.accepted]
-            if self._normalize(raw) in accepted:
+            if self._command_matches(raw, mission.accepted):
                 speed_xp = mission.xp + (10 if elapsed < 5 else 5 if elapsed < 10 else 0)
                 total_xp += speed_xp
                 print(UI.c(f"  ✓  +{speed_xp} XP  ({elapsed:.1f}s)", UI.GREEN))
+                print(UI.c(f"  {random.choice(AFFIRMATIONS)}", UI.BOLD + UI.YELLOW))
             else:
                 print(UI.c(f"  ✗  Expected: {mission.accepted[0]}", UI.RED))
             print()
@@ -2147,6 +2359,7 @@ class TrainerApp:
         msg = editor.run()
         if msg:
             print(UI.c(f"  {msg}", UI.DIM))
+        self._save()
 
     # ── Vim Workshop ──
 
@@ -2237,6 +2450,12 @@ class TrainerApp:
         ),
     ]
 
+    def _prepare_vim_workshop_file(self):
+        self.shell._write_abs(
+            self.shell.cwd + ["workshop.txt"],
+            "linux is a kernel\npractice makes permanent\nvim is worth the pain\n"
+        )
+
     def vim_workshop(self):
         UI.clear()
         self._header()
@@ -2252,12 +2471,8 @@ class TrainerApp:
             color=UI.MAGENTA))
         print()
 
-        # Build a working file for the workshop
-        self.shell.reset_fs()
-        self.shell._write_abs(
-            ["home","student","workshop.txt"],
-            "linux is a kernel\npractice makes permanent\nvim is worth the pain\n"
-        )
+        # Build a working file for the workshop without wiping the sandbox.
+        self._prepare_vim_workshop_file()
 
         vim = VimEditor(self.shell, "workshop.txt")
         vim._draw()
@@ -2394,81 +2609,164 @@ class TrainerApp:
 
 # ─────────────────────────── Tests ───────────────────────────
 
+class LinuxxTests(unittest.TestCase):
+    def make_app(self) -> TrainerApp:
+        app = TrainerApp.__new__(TrainerApp)
+        app.shell = FakeShell()
+        app.quiz_answered = set()
+        app.history = []
+        return app
+
+    def test_core_shell_behaviors(self):
+        shell = FakeShell()
+
+        self.assertEqual(shell.run("pwd"), "/home/student")
+        self.assertIn("readme.txt", shell.run("ls"))
+        self.assertNotIn(".bashrc", shell.run("ls"))
+        self.assertIn(".bashrc", shell.run("ls -a"))
+        self.assertIn(".bashrc", shell.run("ls -la"))
+
+        self.assertEqual(shell.run("cd Documents"), "")
+        self.assertEqual(shell.pwd(), "/home/student/Documents")
+        self.assertEqual(shell.run("cd .."), "")
+        self.assertEqual(shell.pwd(), "/home/student")
+
+        self.assertEqual(shell.run("mkdir practice"), "")
+        self.assertIn("practice", shell.run("ls"))
+
+        self.assertEqual(shell.run("mkdir -p deep/nested/path"), "")
+        self.assertEqual(shell.run("cd deep"), "")
+        self.assertEqual(shell.run("cd .."), "")
+
+        self.assertEqual(shell.run("touch todo.txt"), "")
+        self.assertIn("todo.txt", shell.run("ls"))
+
+        self.assertIn("Welcome to Linux Command Trainer", shell.run("cat readme.txt"))
+        self.assertIn("1  ", shell.run("cat -n notes.txt"))
+
+        self.assertEqual(shell.run("echo hello"), "hello")
+        self.assertIn("/home/student", shell.run("echo $HOME"))
+
+        self.assertEqual(shell.run("cp readme.txt readme_backup.txt"), "")
+        self.assertIn("readme_backup.txt", shell.run("ls"))
+        self.assertEqual(shell.run("cp readme.txt Documents"), "")
+        self.assertEqual(shell._get_abs(shell._resolve("Documents")).type, "dir")
+        self.assertIn("readme.txt", shell.run("ls Documents"))
+
+        self.assertEqual(shell.run("mv old.txt new.txt"), "")
+        self.assertIn("new.txt", shell.run("ls"))
+        self.assertNotIn("old.txt", shell.run("ls"))
+        self.assertIn("subdirectory of itself", shell.run("mv projects projects/linux/foo"))
+        self.assertIsNotNone(shell._get_abs(shell._resolve("projects")))
+
+        self.assertEqual(shell.run("rm temp.txt"), "")
+        self.assertNotIn("temp.txt", shell.run("ls"))
+        self.assertIn("Is a directory", shell.run("rm -f Documents"))
+        self.assertEqual(shell._get_abs(shell._resolve("Documents")).type, "dir")
+        self.assertEqual(shell.run("rm -f missing.txt"), "")
+
+        self.assertIn("linux commands are composable", shell.run("grep linux notes.txt"))
+        self.assertIn("ERROR", shell.run("grep -i error log.txt"))
+
+        self.assertTrue(shell.run("wc -l log.txt").strip().startswith("6"))
+        self.assertIn("INFO  retry successful", shell.run("tail log.txt"))
+        self.assertIn("INFO  boot ok", shell.run("head -n 1 log.txt"))
+
+        self.assertEqual(shell.run("chmod +x script.sh"), "")
+        self.assertIn("-rwxr-xr-x", shell.run("ls -l"))
+        self.assertIn("PID", shell.run("ps"))
+        self.assertIn("terminated", shell.run("kill 404"))
+
+    def test_pipe_and_redirect_regressions(self):
+        shell = FakeShell()
+
+        self.assertTrue(shell.run("ls | wc -l").strip().isdigit())
+        self.assertIn("ERROR", shell.run("cat log.txt | grep ERROR"))
+
+        self.assertEqual(shell.run('echo "a > b"'), "a > b")
+        self.assertEqual(shell.run("echo hi > out.txt"), "")
+        self.assertEqual(shell.run("cat out.txt"), "hi")
+        self.assertEqual(shell.run("echo there >> out.txt"), "")
+        self.assertEqual(shell.run("cat out.txt"), "hi\nthere")
+        self.assertEqual(shell.run("cat > empty.txt"), "")
+        self.assertEqual(shell.run("cat empty.txt"), "")
+        self.assertIn("Is a directory", shell.run("echo nope > Documents"))
+        self.assertEqual(shell._get_abs(shell._resolve("Documents")).type, "dir")
+
+    def test_history_and_repeat_last_command(self):
+        shell = FakeShell()
+
+        self.assertIn("event not found", shell.run("!!"))
+        self.assertEqual(shell.run("pwd"), "/home/student")
+        self.assertEqual(shell.run("!!"), "/home/student")
+        history = shell.run("history")
+        self.assertIn("pwd", history)
+        self.assertIn("history", history)
+        self.assertIn("history", shell.run("history 1"))
+        self.assertIn("pwd", shell.run("history | grep pwd"))
+
+    def test_progress_persists_fake_filesystem(self):
+        global SAVE_FILE
+        old_save_file = SAVE_FILE
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                SAVE_FILE = os.path.join(tmp, "progress.json")
+                shell = FakeShell()
+                shell.run("mkdir practice")
+                shell.run("echo saved > practice/file.txt")
+                shell.run("cd practice")
+                shell.xp = 75
+                shell.score = 25
+                shell.completed.add("demo:mission")
+
+                save_progress(shell, {"pwd"})
+
+                loaded = FakeShell()
+                quiz_answered: set = set()
+                load_progress(loaded, quiz_answered)
+
+                self.assertEqual(loaded.pwd(), "/home/student/practice")
+                self.assertEqual(loaded.run("cat file.txt"), "saved")
+                self.assertEqual(loaded.xp, 75)
+                self.assertEqual(loaded.score, 25)
+                self.assertIn("demo:mission", loaded.completed)
+                self.assertIn("pwd", quiz_answered)
+        finally:
+            SAVE_FILE = old_save_file
+
+    def test_mission_command_matching_accepts_equivalent_forms(self):
+        app = self.make_app()
+
+        self.assertTrue(app._command_matches("ls -al", ["ls -la"]))
+        self.assertTrue(app._command_matches("mkdir projects/linux -p", ["mkdir -p projects/linux"]))
+        self.assertTrue(app._command_matches('find . -name "*.txt"', ["find . -name '*.txt'"]))
+        self.assertTrue(app._command_matches("ls|wc -l", ["ls | wc -l"]))
+        self.assertTrue(app._command_matches("grep -i \"error\" log.txt", ["grep -i error log.txt"]))
+        self.assertFalse(app._command_matches("rm other.txt", ["rm temp.txt"]))
+
+    def test_app_helpers(self):
+        shell2 = FakeShell()
+        self.assertEqual(shell2.level(), 1)
+        shell2.xp = 50
+        self.assertEqual(shell2.level(), 2)
+
+        app = self.make_app()
+        app.shell.run("touch keep.txt")
+        app._prepare_vim_workshop_file()
+        self.assertEqual(app.shell._get_abs(app.shell._resolve("Documents")).type, "dir")
+        self.assertIn("keep.txt", app.shell.run("ls"))
+        self.assertIn("workshop.txt", app.shell.run("ls"))
+        self.assertGreaterEqual(len(AFFIRMATIONS), 5)
+        self.assertGreaterEqual(len(TIPS_OF_THE_DAY), 5)
+        self.assertEqual(app._next_lesson(LESSONS[0]).command, "ls")
+        self.assertIsNone(app._next_lesson(LESSONS[-1]))
+
+
 def run_tests() -> None:
-    shell = FakeShell()
-
-    assert shell.run("pwd") == "/home/student"
-    assert "readme.txt" in shell.run("ls")
-    assert ".bashrc" not in shell.run("ls")
-    assert ".bashrc" in shell.run("ls -a")
-    assert ".bashrc" in shell.run("ls -la")
-
-    assert shell.run("cd Documents") == ""
-    assert shell.pwd() == "/home/student/Documents"
-    assert shell.run("cd ..") == ""
-    assert shell.pwd() == "/home/student"
-
-    assert shell.run("mkdir practice") == ""
-    assert "practice" in shell.run("ls")
-
-    assert shell.run("mkdir -p deep/nested/path") == ""
-    assert shell.run("cd deep") == ""
-    assert shell.run("cd ..") == ""
-
-    assert shell.run("touch todo.txt") == ""
-    assert "todo.txt" in shell.run("ls")
-
-    assert "Welcome to Linux Command Trainer" in shell.run("cat readme.txt")
-    assert "1  " in shell.run("cat -n notes.txt")
-
-    assert shell.run("echo hello") == "hello"
-    assert "/home/student" in shell.run("echo $HOME")
-
-    assert shell.run("cp readme.txt readme_backup.txt") == ""
-    assert "readme_backup.txt" in shell.run("ls")
-
-    assert shell.run("mv old.txt new.txt") == ""
-    assert "new.txt" in shell.run("ls")
-    assert "old.txt" not in shell.run("ls")
-
-    assert shell.run("rm temp.txt") == ""
-    assert "temp.txt" not in shell.run("ls")
-
-    assert "linux commands are composable" in shell.run("grep linux notes.txt")
-    assert "ERROR" in shell.run("grep -i error log.txt")
-
-    assert shell.run("wc -l log.txt").strip().startswith("6")
-
-    assert "INFO  retry successful" in shell.run("tail log.txt")
-    assert "INFO  boot ok" in shell.run("head -n 1 log.txt")
-
-    assert shell.run("chmod +x script.sh") == ""
-    assert "-rwxr-xr-x" in shell.run("ls -l")
-
-    assert "PID" in shell.run("ps")
-    assert "terminated" in shell.run("kill 404")
-
-    # Pipe tests
-    pipe_out = shell.run("ls | wc -l")
-    assert pipe_out.strip().isdigit()
-
-    pipe_out2 = shell.run("cat log.txt | grep ERROR")
-    assert "ERROR" in pipe_out2
-
-    # XP / level system
-    shell2 = FakeShell()
-    assert shell2.level() == 1
-    shell2.xp = 50
-    assert shell2.level() == 2
-
-    app = TrainerApp.__new__(TrainerApp)
-    app.shell = FakeShell()
-    app.quiz_answered = set()
-    assert len(AFFIRMATIONS) >= 5
-    assert len(TIPS_OF_THE_DAY) >= 5
-    assert app._next_lesson(LESSONS[0]).command == "ls"
-    assert app._next_lesson(LESSONS[-1]) is None
-
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(LinuxxTests)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if not result.wasSuccessful():
+        sys.exit(1)
     print("All tests passed.")
 
 
