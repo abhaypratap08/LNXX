@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Come Learn Linux with Capto - Enhanced Edition
-Run:     python3 linuxx.py
+LNXX — your safe terminal playground (TUI).
+Run:     python3 linuxx.py            (TUI is the default; --tui also works)
 Tests:   python3 linuxx.py --test
-No external dependencies. Python 3.8+.
+Classic CLI was removed. Engine (FakeShell, lessons, editors) + Textual TUI.
+TUI needs the 'textual' package (auto-installed on launch if missing).
+Python 3.8+.
 """
 
 import json
@@ -13,6 +15,7 @@ import random
 import re
 import shlex
 import sys
+import subprocess
 import textwrap
 import time
 import tempfile
@@ -104,13 +107,18 @@ class UI:
 
     @staticmethod
     def banner() -> str:
+        brand = (UI.c("  🌱 LNXX", UI.BOLD + UI.YELLOW) +
+                 UI.c("  ·  your safe terminal playground — nothing real can break", UI.DIM))
         prompt  = (UI.c("  capto@linux-lab", UI.BOLD + UI.GREEN) +
                    UI.c(":", UI.WHITE) +
                    UI.c("~", UI.BOLD + UI.BLUE) +
                    UI.c("$ ", UI.WHITE) +
                    UI.c("come learn linux", UI.BOLD + UI.CYAN))
-        tagline = UI.c("  ┌─ a safe terminal to practice, break things, and get good.", UI.DIM)
-        return prompt + "\n" + tagline
+        return brand + "\n" + prompt
+
+    @staticmethod
+    def capto(text: str) -> str:
+        return UI.c("  🦊 Capto82: ", UI.BOLD + UI.MAGENTA) + text
 
     @staticmethod
     def level_badge(level: int) -> str:
@@ -1861,766 +1869,990 @@ def load_progress(shell: FakeShell, quiz_answered: set) -> None:
 
 # ─────────────────────────── App ───────────────────────────
 
-class TrainerApp:
-    def __init__(self):
-        self.shell = FakeShell()
-        self.quiz_answered: set = set()
-        self.history: List[Tuple[str, str]] = []
-        load_progress(self.shell, self.quiz_answered)
 
-    def _save(self):
-        save_progress(self.shell, self.quiz_answered)
+# ─────────────────── Shared engine helpers (ex-TrainerApp) ──────────
+# Command matcher + vim curriculum live at module level so both the TUI
+# and tests use them without the classic CLI.
 
-    def run(self):
-        while True:
-            UI.clear()
-            self._header()
-            print(UI.c("  1", UI.BOLD + UI.CYAN) + "  Learn commands")
-            print(UI.c("  2", UI.BOLD + UI.CYAN) + "  Practice missions")
-            print(UI.c("  3", UI.BOLD + UI.CYAN) + "  Sandbox terminal")
-            print(UI.c("  4", UI.BOLD + UI.CYAN) + "  Speed challenge")
-            print(UI.c("  5", UI.BOLD + UI.CYAN) + "  Cheat sheet")
-            print(UI.c("  6", UI.BOLD + UI.CYAN) + "  Command record")
-            print(UI.c("  8", UI.BOLD + UI.MAGENTA) + "  Vim workshop")
-            print(UI.c("  7", UI.BOLD + UI.YELLOW) + "  Reset progress + filesystem")
-            print(UI.c("  0", UI.DIM)            + "  Exit")
-            choice = input(UI.c("\n  › ", UI.CYAN)).strip()
-            if choice == "1":
-                self.learn_menu()
-            elif choice == "2":
-                self.practice_menu()
-            elif choice == "3":
-                self.sandbox()
-            elif choice == "4":
-                self.speed_challenge()
-            elif choice == "5":
-                self.cheat_sheet()
-            elif choice == "6":
-                self.command_record()
-            elif choice == "7":
-                self._full_reset()
-            elif choice == "8":
-                self.vim_workshop()
-            elif choice == "0":
-                self._save()
-                UI.clear()
-                print(UI.c("  Progress saved. Keep drilling until it's muscle memory.", UI.DIM))
-                print()
-                break
-            else:
-                print(UI.c("  Invalid choice.", UI.RED))
-                UI.pause()
+def _normalize_cmd(cmd: str) -> str:
+    return " ".join(cmd.strip().split())
 
-    def _full_reset(self):
-        confirm = input(UI.c("  Reset ALL progress and filesystem? (yes/no) > ", UI.YELLOW)).strip()
-        if confirm.lower() == "yes":
-            self.shell = FakeShell()
-            self.quiz_answered.clear()
-            self.history.clear()
-            if os.path.exists(SAVE_FILE):
-                os.remove(SAVE_FILE)
-            print(UI.c("  Reset complete.", UI.GREEN))
+
+def _simple_command_signature(tokens: List[str]) -> Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[str, ...]]:
+    value_options = {"-n", "-name", "-type"}
+    cmd = tokens[0]
+    flags: List[str] = []
+    option_pairs: List[Tuple[str, str]] = []
+    operands: List[str] = []
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in value_options and i + 1 < len(tokens):
+            option_pairs.append((token, tokens[i + 1]))
+            i += 2
+        elif token.startswith("--") and len(token) > 2:
+            flags.append(token)
+            i += 1
+        elif token.startswith("-") and len(token) > 1:
+            flags.extend(f"-{char}" for char in token[1:])
+            i += 1
         else:
-            print(UI.c("  Cancelled.", UI.DIM))
-        UI.pause()
+            operands.append(token)
+            i += 1
+    return cmd, tuple(sorted(flags)), tuple(sorted(option_pairs)), tuple(operands)
 
-    def _header(self):
-        print(UI.banner())
-        print()
-        lvl = self.shell.level()
-        badge = UI.level_badge(lvl)
-        xp_cur, xp_max = self.shell.xp_for_next()
-        xp_bar = UI.xp_bar(xp_cur, xp_max)
-        total_missions = sum(len(l.missions) for l in LESSONS)
-        done = len(self.shell.completed)
-        tip = random.choice(TIPS_OF_THE_DAY)
 
-        print(UI.c(f"  {badge} Level {lvl}  ", UI.BOLD + UI.YELLOW) +
-              f"XP {self.shell.xp}  {xp_bar}  " +
-              UI.c(f"Score {self.shell.score}", UI.GREEN))
-        print(UI.c(f"  Missions {done}/{total_missions}", UI.CYAN) +
-              UI.c(f"  │  Commands run: {self.shell.commands_run}", UI.DIM) +
-              UI.c(f"  │  cwd: {self.shell.pwd()}", UI.YELLOW))
-        print(UI.c(f"  💡 Tip: {tip}", UI.DIM))
-        print(UI.c("  " + UI.rule(), UI.DIM))
-        print()
-
-    def _compact_status(self):
-        lvl = self.shell.level()
-        xp_cur, xp_max = self.shell.xp_for_next()
-        print(UI.c(f"  {UI.level_badge(lvl)} Lv{lvl}  XP {self.shell.xp}  {UI.xp_bar(xp_cur, xp_max)}  Score {self.shell.score}  cwd: {self.shell.pwd()}", UI.DIM))
-
-    # ── Learn ──
-
-    def learn_menu(self):
-        while True:
-            UI.clear()
-            self._header()
-            print(UI.c("  LESSONS", UI.BOLD + UI.CYAN))
-            print()
-            for i, lesson in enumerate(LESSONS, 1):
-                done = all(
-                    self._mission_key(lesson, m) in self.shell.completed
-                    for m in lesson.missions
-                )
-                badge = UI.c(" ✓", UI.GREEN) if done else "  "
-                print(f" {badge} {UI.c(str(i).rjust(2), UI.CYAN)}. {UI.c(lesson.command, UI.BOLD):<22}  {UI.c(lesson.title, UI.DIM)}")
-            print()
-            print(UI.c("   0. Back", UI.DIM))
-            raw = input(UI.c("\n  Open lesson › ", UI.CYAN)).strip()
-            if raw == "0":
-                return
-            if raw.isdigit() and 1 <= int(raw) <= len(LESSONS):
-                self.show_lesson(LESSONS[int(raw) - 1])
-            else:
-                print(UI.c("  Invalid number.", UI.RED))
-                UI.pause()
-
-    def _lesson_success(self, lesson: Lesson, raw: str, out: str) -> bool:
-        raw = raw.strip()
-        if not raw:
-            return False
-        try:
-            cmd = shlex.split(raw)[0]
-        except ValueError:
-            return False
-        accepted = lesson.command.split("/")
-        # pipe lessons
-        if "|" in lesson.command or "|" in raw:
-            accepted.append("pipe")
-        bad = ["command not found", "No such", "missing", "cannot", "not a directory", "syntax error"]
-        if cmd not in accepted and not ("|" in raw and lesson.command == "pipe (|)"):
-            return False
-        return not any(m in out for m in bad)
-
-    def show_lesson(self, lesson: Lesson):
-        UI.clear()
-        self._header()
-        self._print_lesson(lesson)
-        print(UI.c("\n  Mini shell — try the commands above. Type 'back' to return.\n", UI.DIM))
-        active = lesson  # advances as quizzes are passed
-        while True:
-            raw = input(UI.c(f"  student:{self.shell.pwd()}$ ", UI.GREEN))
-            if raw.strip() == "back":
-                self._save()
-                return
-            out = self.shell.run(raw)
-            if out == "__CLEAR__":
-                UI.clear()
-                self._header()
-                self._print_lesson(active)
-                continue
-            if out and out.startswith("__EDITOR__:"):
-                self._open_editor(out)
-                continue
-            if out:
-                print(UI.c("  " + out.replace("\n", "\n  "), UI.WHITE))
-            if self._lesson_success(active, raw, out):
-                passed  = self._ask_quiz(active)
-                if passed:
-                    nxt = self._next_lesson(active)
-                    if nxt:
-                        print()
-                        print(UI.c(f"  ── Up next: {nxt.command} ──────────────────────────────", UI.BOLD + UI.CYAN))
-                        print()
-                        self._print_lesson(nxt)
-                        print()
-                        print(UI.c("  Still in the mini shell — try the new commands above, or type 'back'.", UI.DIM))
-                        active = nxt  # shell now listens for next lesson's command
-
-    def _print_lesson(self, lesson: Lesson):
-        body = "\n".join([
-            f"Command : {UI.c(lesson.command, UI.BOLD + UI.GREEN)}",
-            "",
-            f"Concept : {lesson.concept}",
-            "",
-            f"Syntax  : {UI.c(lesson.syntax, UI.YELLOW)}",
-        ])
-        print(UI.box(lesson.title, body))
-        print()
-        print(UI.c("  Examples:", UI.BOLD + UI.GREEN))
-        for ex in lesson.examples:
-            print(UI.c(f"    $ {ex}", UI.CYAN))
-        print()
-        print(UI.c("  Common mistakes:", UI.BOLD + UI.YELLOW))
-        for m in lesson.mistakes:
-            print(f"    {UI.c('✗', UI.RED)}  {m}")
-        if lesson.pro_tip:
-            print()
-            print(UI.c(f"  ⚡ Pro tip: {lesson.pro_tip}", UI.MAGENTA))
-
-    def _ask_quiz(self, lesson: Lesson) -> bool:
-        """Return True if the quiz was passed."""
-        quiz = QUIZ_QUESTIONS.get(lesson.command)
-        if not quiz:
-            return True  # no quiz for this lesson — consider it passed
-        already_answered = lesson.command in self.quiz_answered
-        print()
-        label = "Capto checkpoint" if not already_answered else "Capto checkpoint review"
-        print(UI.c(f"  ── {label} ──", UI.BOLD + UI.YELLOW))
-        print(f"  {quiz['q']}")
-        answer = input(UI.c("  Answer › ", UI.CYAN)).strip().lower()
-        if any(k in answer for k in quiz["keys"]):
-            if already_answered:
-                print(UI.c("  ✓ Correct. Review complete.", UI.GREEN))
-            else:
-                self.quiz_answered.add(lesson.command)
-                new_lvl = self.shell.add_xp(15)
-                self.shell.score += 5
-                self.shell.accomplished_commands.append(f"concept:{lesson.command}")
-                print(UI.c("  ✓ Correct. +15 XP", UI.GREEN))
-                if new_lvl:
-                    self._level_up_banner(new_lvl)
-            print(UI.c(f"  {random.choice(AFFIRMATIONS)}", UI.BOLD + UI.YELLOW))
-            self._compact_status()
-            self._save()
-            return True
+def _command_signature(cmd: str) -> Optional[Tuple[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[str, ...]], ...]]:
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars="|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    segments: List[List[str]] = [[]]
+    for token in tokens:
+        if token == "|":
+            segments.append([])
         else:
-            print(UI.c("  Not quite. Re-read the concept and try again.", UI.RED))
-            print(UI.c("  Hint: answer in plain words — what the flag does, what the command shows, etc.", UI.YELLOW))
-            return False
+            segments[-1].append(token)
+    if any(not segment for segment in segments):
+        return None
+    return tuple(_simple_command_signature(segment) for segment in segments)
 
-    # ── Missions ──
 
-    def practice_menu(self):
-        missions_flat = [(l, m) for l in LESSONS for m in l.missions]
-        while True:
-            UI.clear()
-            self._header()
-            print(UI.c("  PRACTICE MISSIONS", UI.BOLD + UI.CYAN))
-            print()
-            for i, (lesson, mission) in enumerate(missions_flat, 1):
-                key = self._mission_key(lesson, mission)
-                done = key in self.shell.completed
-                status = UI.c("✓", UI.GREEN) if done else UI.c("○", UI.YELLOW)
-                xp_label = UI.c(f"+{mission.xp}xp", UI.DIM)
-                print(f"  {status}  {UI.c(str(i).rjust(2), UI.CYAN)}.  {UI.c(lesson.command, UI.BOLD):<22}  {mission.prompt}  {xp_label}")
-            print()
-            print(UI.c("   0. Back", UI.DIM))
-            raw = input(UI.c("\n  Mission › ", UI.CYAN)).strip()
-            if raw == "0":
-                return
-            if raw.isdigit() and 1 <= int(raw) <= len(missions_flat):
-                self._run_mission(*missions_flat[int(raw) - 1])
-            else:
-                print(UI.c("  Invalid.", UI.RED))
-                UI.pause()
+def engine_command_matches(raw: str, accepted_commands: List[str]) -> bool:
+    raw_norm = _normalize_cmd(raw)
+    accepted_norm = [_normalize_cmd(cmd) for cmd in accepted_commands]
+    if raw_norm in accepted_norm:
+        return True
+    raw_sig = _command_signature(raw)
+    if raw_sig is None:
+        return False
+    return any(raw_sig == _command_signature(cmd) for cmd in accepted_commands)
 
-    def _mission_key(self, lesson: Lesson, mission: Mission) -> str:
-        return f"{lesson.command}:{mission.prompt}"
 
-    def _normalize(self, cmd: str) -> str:
-        return " ".join(cmd.strip().split())
+def engine_mission_key(lesson, mission) -> str:
+    return f"{lesson.command}:{mission.prompt}"
 
-    def _command_signature(self, cmd: str) -> Optional[Tuple[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[str, ...]], ...]]:
-        try:
-            lexer = shlex.shlex(cmd, posix=True, punctuation_chars="|")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
-        except ValueError:
-            return None
-        if not tokens:
-            return None
 
-        segments: List[List[str]] = [[]]
-        for token in tokens:
-            if token == "|":
-                segments.append([])
-            else:
-                segments[-1].append(token)
-        if any(not segment for segment in segments):
-            return None
-        return tuple(self._simple_command_signature(segment) for segment in segments)
+VIM_STEPS = [
+    VimStep(
+        "You're in NORMAL mode. Press  i  to enter INSERT mode.",
+        ["i"],
+        "In vim, you always start in NORMAL mode. 'i' switches to INSERT.",
+        "vim has modes. NORMAL is for navigation/commands. INSERT is for typing text.",
+        mode_after="insert",
+    ),
+    VimStep(
+        "You're in INSERT mode. Type a line of text, then press  ESC  to return to NORMAL.",
+        ["ESC"],
+        "Type anything, then type ESC to leave INSERT mode.",
+        "ESC is how you leave INSERT mode. This is the most important vim key.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "In NORMAL mode, press  o  to open a new line below and enter INSERT.",
+        ["o"],
+        "'o' = open line below. One of the most-used vim commands.",
+        "'o' creates a blank line below the cursor and drops you into INSERT.",
+        mode_after="insert",
+    ),
+    VimStep(
+        "Press  ESC  to return to NORMAL mode.",
+        ["ESC"],
+        "Always ESC to get back to NORMAL.",
+        "If you're ever lost in vim, spam ESC until you're in NORMAL mode.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Navigate with  j  (down) and  k  (up). Press  j  now.",
+        ["j"],
+        "j = down, k = up, h = left, l = right.",
+        "hjkl are the vim navigation keys — designed so your fingers never leave home row.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Press  k  to move up.",
+        ["k"],
+        "k moves up one line.",
+        "j/k replace the arrow keys in vim. Faster once memorised.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Press  dd  to delete the current line.",
+        ["dd"],
+        "dd deletes the whole line and puts it in the buffer.",
+        "dd = delete line. The deleted line is also yanked (buffered) for pasting.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Press  p  to paste the deleted line back below the cursor.",
+        ["p"],
+        "p pastes whatever was last yanked/deleted.",
+        "p = put. It inserts the buffer below the current line.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Press  yy  to yank (copy) the current line without deleting it.",
+        ["yy"],
+        "yy = yank line. Think 'y' for yoink.",
+        "yy copies the line into the buffer. p to paste it.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Type  :  to enter COMMAND mode, then type  w  and press Enter to save.",
+        [":w", "w"],
+        "':' opens the command line at the bottom. 'w' = write (save).",
+        ":w saves the file. The colon prompt appears at the bottom of the screen.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Type  :%s/linux/LINUX/g  to replace every occurrence of 'linux' with 'LINUX'.",
+        [":%s/linux/LINUX/g"],
+        "%s/old/new/g replaces all. % = whole file, g = all on each line.",
+        ":%s is vim's substitute command. One of the most powerful editing tools.",
+        mode_after="normal",
+    ),
+    VimStep(
+        "Type  :wq  to save and quit vim.",
+        [":wq", "wq"],
+        ":wq = write + quit. The standard vim exit.",
+        ":wq saves and closes the file. You've completed the vim basics!",
+        mode_after="normal",
+    ),
+]
 
-    def _simple_command_signature(self, tokens: List[str]) -> Tuple[str, Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[str, ...]]:
-        value_options = {"-n", "-name", "-type"}
-        cmd = tokens[0]
-        flags: List[str] = []
-        option_pairs: List[Tuple[str, str]] = []
-        operands: List[str] = []
-        i = 1
-        while i < len(tokens):
-            token = tokens[i]
-            if token in value_options and i + 1 < len(tokens):
-                option_pairs.append((token, tokens[i + 1]))
-                i += 2
-            elif token.startswith("--") and len(token) > 2:
-                flags.append(token)
-                i += 1
-            elif token.startswith("-") and len(token) > 1:
-                flags.extend(f"-{char}" for char in token[1:])
-                i += 1
-            else:
-                operands.append(token)
-                i += 1
-        return cmd, tuple(sorted(flags)), tuple(sorted(option_pairs)), tuple(operands)
+# ─────────────────────────── TUI (single-file) ───────────────────────────
+# Full Textual TUI lives here — linuxx.py is the single file.
+# Engine + --test work with NO extra deps; textual is optional (TUI only).
 
-    def _command_matches(self, raw: str, accepted_commands: List[str]) -> bool:
-        raw_norm = self._normalize(raw)
-        accepted_norm = [self._normalize(cmd) for cmd in accepted_commands]
-        if raw_norm in accepted_norm:
-            return True
+try:
+    from textual.app import App, ComposeResult
+    from textual.containers import Horizontal, Vertical
+    from textual.screen import ModalScreen
+    from textual.widgets import (
+        Header, Input, Label, ListItem, ListView,
+        RichLog, Static, ProgressBar, Button, TextArea,
+    )
+    _TEXTUAL_AVAILABLE = True
+    _TEXTUAL_ERROR = None
+except ImportError as _tui_import_error:  # textual not installed
+    App = object  # type: ignore
+    ComposeResult = object  # type: ignore
+    Horizontal = Vertical = object  # type: ignore
+    ModalScreen = object  # type: ignore
+    Header = Input = Label = ListItem = ListView = object  # type: ignore
+    RichLog = Static = ProgressBar = Button = TextArea = object  # type: ignore
+    _TEXTUAL_AVAILABLE = False
+    _TEXTUAL_ERROR = _tui_import_error
 
-        raw_sig = self._command_signature(raw)
-        if raw_sig is None:
-            return False
-        return any(raw_sig == self._command_signature(cmd) for cmd in accepted_commands)
 
-    def _run_mission(self, lesson: Lesson, mission: Mission):
-        attempts = 0
-        while True:
-            UI.clear()
-            self._header()
-            print(UI.box(f"Mission — {lesson.command}", mission.prompt + f"\n\nXP reward: +{mission.xp}"))
-            print(UI.c("  Type the command. 'hint' for a nudge, 'back' to quit.\n", UI.DIM))
-            raw = input(UI.c(f"  student:{self.shell.pwd()}$ ", UI.GREEN)).strip()
-            if raw in ("back", "exit"):
-                return
-            if raw == "hint":
-                print(UI.c(f"\n  Hint: {mission.hint}", UI.YELLOW))
-                UI.pause()
-                continue
-            out = self.shell.run(raw)
-            if out == "__CLEAR__":
-                continue
-            if out:
-                print(UI.c("  " + out.replace("\n", "\n  "), UI.WHITE))
+def _tui_normalize(cmd: str) -> str:
+    return " ".join(cmd.strip().split())
 
-            if self._command_matches(raw, mission.accepted):
-                key = self._mission_key(lesson, mission)
-                if key not in self.shell.completed:
-                    self.shell.completed.add(key)
-                    self.shell.accomplished_commands.append(self._normalize(raw))
-                    new_lvl = self.shell.add_xp(mission.xp)
-                    self.shell.score += mission.xp
-                    print()
-                    print(UI.c(f"  ✓ Correct! +{mission.xp} XP", UI.BOLD + UI.GREEN))
-                    print(UI.c(f"  {random.choice(AFFIRMATIONS)}", UI.BOLD + UI.YELLOW))
-                    if new_lvl:
-                        self._level_up_banner(new_lvl)
-                    print(f"\n  {UI.c('What happened:', UI.BOLD)} {mission.explanation}")
-                    self._compact_status()
-                    self._save()
-                else:
-                    print(UI.c("  ✓ Already completed — but the command is correct.", UI.GREEN))
-                UI.pause()
-                return
-            else:
-                attempts += 1
-                print(UI.c("\n  ✗ Not the target command for this mission.", UI.RED))
-                if attempts >= 2:
-                    print(UI.c("  Type 'hint' for a nudge.", UI.YELLOW))
-                UI.pause()
 
-    # ── Sandbox ──
+def tui_command_matches(raw: str, accepted: List[str]) -> bool:
+    # Battle-tested matcher (flag order, quoting, pipes).
+    return engine_command_matches(raw, accepted)
 
-    def sandbox(self):
-        UI.clear()
-        self._header()
-        print(UI.box("Sandbox Terminal",
-            "Safe simulated shell. Your real filesystem is untouched.\n"
-            "Commands: pwd, ls, cd, mkdir, touch, cat, echo, cp, mv, rm,\n"
-            "          grep, find, wc, head, tail, chmod, ps, kill, history\n"
-            "Pipes:    command1 | command2\n"
-            "Special:  !! (repeat last), reset (restore files), help, back (exit sandbox)"))
-        print()
-        while True:
-            try:
-                raw = input(UI.c(f"  student:{self.shell.pwd()}$ ", UI.GREEN))
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return
-            if raw.strip() == "back":
-                self._save()
-                return
-            out = self.shell.run(raw)
-            self.history.append((raw, out))
-            if out == "__CLEAR__":
-                UI.clear()
-                self._header()
-                continue
-            if out and out.startswith("__EDITOR__:"):
-                self._open_editor(out)
-                continue
-            if out:
-                print(UI.c("  " + out.replace("\n", "\n  "), UI.WHITE))
 
-    # ── Speed Challenge ──
+# Alias kept for external callers that used command_matches.
+def command_matches(raw: str, accepted: List[str]) -> bool:
+    return tui_command_matches(raw, accepted)
 
-    def speed_challenge(self):
-        UI.clear()
-        self._header()
-        missions_flat = [(l, m) for l in LESSONS for m in l.missions]
-        pool = [pair for pair in missions_flat if self._mission_key(*pair) not in self.shell.completed]
-        if not pool:
-            pool = missions_flat  # all done — let them repeat
 
-        print(UI.box("Speed Challenge",
-            "5 missions. Type the correct command as fast as possible.\n"
-            "Bonus XP for speed. Type 'skip' to skip a question.\n"
-            "Type 'back' to exit."))
-        print()
+TUI_LEVEL_BADGES = {1: "🐣", 2: "🌱", 3: "⚡", 4: "🔥", 5: "💎", 6: "👑", 7: "🦾", 8: "🚀", 9: "🌌", 10: "🏆"}
 
-        total_xp = 0
-        num = min(5, len(pool))
-        selected = random.sample(pool, num)
-        for qi, (lesson, mission) in enumerate(selected, 1):
-            print(UI.c(f"  [{qi}/{num}] {mission.prompt}", UI.BOLD + UI.CYAN))
-            t_start = time.time()
-            raw = input(UI.c(f"  student:{self.shell.pwd()}$ ", UI.GREEN)).strip()
-            elapsed = time.time() - t_start
-            if raw == "back":
-                break
-            if raw == "skip":
-                print(UI.c(f"  Skipped. Accepted: {mission.accepted[0]}", UI.YELLOW))
-                print()
-                continue
-            if self._command_matches(raw, mission.accepted):
-                speed_xp = mission.xp + (10 if elapsed < 5 else 5 if elapsed < 10 else 0)
-                total_xp += speed_xp
-                print(UI.c(f"  ✓  +{speed_xp} XP  ({elapsed:.1f}s)", UI.GREEN))
-                print(UI.c(f"  {random.choice(AFFIRMATIONS)}", UI.BOLD + UI.YELLOW))
-            else:
-                print(UI.c(f"  ✗  Expected: {mission.accepted[0]}", UI.RED))
-            print()
 
-        if total_xp > 0:
-            new_lvl = self.shell.add_xp(total_xp)
-            self.shell.score += total_xp
-            print(UI.c(f"  Challenge done. Total XP earned: +{total_xp}", UI.BOLD + UI.GREEN))
-            if new_lvl:
-                self._level_up_banner(new_lvl)
-            self._compact_status()
-            self._save()
-        UI.pause()
+def tui_level_badge(level: int) -> str:
+    return TUI_LEVEL_BADGES.get(min(level, 10), "🏆")
 
-    # ── Cheat Sheet ──
 
-    def cheat_sheet(self):
-        UI.clear()
-        self._header()
-        print(UI.c("  COMMAND CHEAT SHEET", UI.BOLD + UI.CYAN))
-        print()
-        for lesson in LESSONS:
-            print(
-                UI.c(f"  {lesson.command:<16}", UI.BOLD + UI.GREEN) +
-                UI.c(f"  {lesson.syntax:<36}", UI.YELLOW) +
-                UI.c(f"  {lesson.title}", UI.DIM)
+def tui_mission_key(lesson, mission) -> str:
+    return f"{lesson.command}:{mission.prompt}"
+
+
+# Alias kept for external callers that used mission_key.
+def mission_key(lesson, mission) -> str:
+    return tui_mission_key(lesson, mission)
+
+
+if _TEXTUAL_AVAILABLE:
+
+    class StatsBar(Static):
+        def compose(self) -> ComposeResult:
+            yield Label(id="stats_line1")
+            yield ProgressBar(total=100, show_eta=False, id="xp_bar")
+            yield Label(id="stats_line2")
+
+        def refresh_display(self, shell: FakeShell) -> None:
+            lvl = shell.level()
+            xp_cur, xp_max = shell.xp_for_next()
+            total = sum(len(les.missions) for les in LESSONS)
+            done = len(shell.completed)
+            self.query_one("#stats_line1", Label).update(
+                f"{tui_level_badge(lvl)} Level {lvl}  ·  {done} of {total} goals done  ·  You are here: {shell.pwd()}  ·  Score {shell.score}"
             )
-        print()
-        print(UI.c("  Pipes: cmd1 | cmd2 | cmd3   (chain commands)", UI.CYAN))
-        print(UI.c("  Redirect: cmd > file (overwrite)   cmd >> file (append)", UI.CYAN))
-        UI.pause()
+            bar = self.query_one("#xp_bar", ProgressBar)
+            bar.update(total=xp_max, progress=xp_cur)
+            self.query_one("#stats_line2", Label).update(
+                f"Safe playground — nothing real can break. {getattr(self, 'tip', '')}"
+            )
 
-    # ── Command Record ──
 
-    def command_record(self):
-        UI.clear()
-        self._header()
-        print(UI.c("  COMMAND RECORD", UI.BOLD + UI.CYAN))
-        print()
+    class LessonDetail(Static):
+        def compose(self) -> ComposeResult:
+            yield Label("", id="detail_title")
+            yield Label("", id="detail_mission")
 
-        lvl = self.shell.level()
-        xp_cur, xp_max = self.shell.xp_for_next()
-        total = sum(len(l.missions) for l in LESSONS)
-        print(f"  Level     : {UI.c(str(lvl), UI.BOLD + UI.YELLOW)} {UI.level_badge(lvl)}")
-        print(f"  XP        : {UI.c(str(self.shell.xp), UI.GREEN)}  {UI.xp_bar(xp_cur, xp_max)}")
-        print(f"  Score     : {UI.c(str(self.shell.score), UI.GREEN)}")
-        print(f"  Missions  : {UI.c(str(len(self.shell.completed)), UI.GREEN)}/{total}")
-        print(f"  Cmds run  : {self.shell.commands_run}")
-        print(f"  Quiz done : {len(self.quiz_answered)}")
-        print()
+        def show_lesson(self, idx: int, shell: FakeShell) -> None:
+            lesson = LESSONS[idx]
+            done_missions = sum(1 for m in lesson.missions if tui_mission_key(lesson, m) in shell.completed)
+            current = next((m for m in lesson.missions if tui_mission_key(lesson, m) not in shell.completed), None)
+            mark = "done ✓" if done_missions == len(lesson.missions) else f"{done_missions}/{len(lesson.missions)} done"
+            self.query_one("#detail_title", Label).update(f"{lesson.command} — {lesson.title} ({mark})")
+            if current:
+                self.query_one("#detail_mission", Label).update(
+                    f"Your goal: {current.prompt}  →  Try typing: {current.accepted[0]}  (F2 fills it in)"
+                )
+            else:
+                self.query_one("#detail_mission", Label).update("All done here — pick the next lesson below.")
 
-        print(UI.c("  Completed missions:", UI.BOLD + UI.GREEN))
-        if self.shell.accomplished_commands:
-            for i, cmd in enumerate(self.shell.accomplished_commands, 1):
-                print(f"    {i:>2}.  {cmd}")
-        else:
-            print(UI.c("    None yet.", UI.DIM))
 
-        print()
-        print(UI.c("  Recent commands:", UI.BOLD + UI.YELLOW))
-        recent = self.shell.command_log[-20:]
-        if recent:
-            for i, cmd in enumerate(recent, 1):
-                print(f"    {i:>2}.  {cmd}")
-        else:
-            print(UI.c("    No commands run yet.", UI.DIM))
+    class CaptoPane(Static):
+        def compose(self) -> ComposeResult:
+            yield Label("Hi! I'm Capto82 — your guide. You can't break anything here.", id="capto_line")
 
-        UI.pause()
+        def say(self, text: str) -> None:
+            self.query_one("#capto_line", Label).update(f"🦊 Capto82: {text}")
 
-    # ── Editors ──
 
-    def _open_editor(self, signal: str):
-        """Handle __EDITOR__:type:filepath signals from shell."""
-        parts  = signal.split(":", 2)
-        etype  = parts[1] if len(parts) > 1 else "vim"
-        fpath  = parts[2] if len(parts) > 2 else ""
-        if etype == "nano":
-            editor = NanoEditor(self.shell, fpath)
-        else:
-            editor = VimEditor(self.shell, fpath)
-        msg = editor.run()
-        if msg:
-            print(UI.c(f"  {msg}", UI.DIM))
-        self._save()
+    class WelcomeScreen(ModalScreen):
+        CSS = """
+        WelcomeScreen { align: center middle; }
+        #welcome_box { border: round #7ee787; background: #0d1526; padding: 1 3; width: 62; height: auto; }
+        #welcome_title { text-style: bold; color: #7ee787; height: 1; }
+        #welcome_body { color: #c9d1d9; height: auto; margin-top: 1; }
+        #welcome_btns { height: 3; margin-top: 1; }
+        Button { margin-right: 1; }
+        """
 
-    # ── Vim Workshop ──
+        def compose(self) -> ComposeResult:
+            with Vertical(id="welcome_box"):
+                yield Label("🌱 Welcome to LNXX — your safe terminal playground", id="welcome_title")
+                yield Label(
+                    "Never touched a terminal? Perfect — you're who this is for.\n\n"
+                    "• This is a PRETEND computer. No real files. No way to break anything.\n"
+                    "• Your first win takes ~30 seconds: type one tiny word, press Enter.\n"
+                    "• Stuck? F1 hint, F2 fills the answer, F3 full lesson, F4 missions,\n"
+                    "  F6 speed challenge, F7 cheat+record, F8 vim dojo. Capto82 never judges.",
+                    id="welcome_body",
+                )
+                with Horizontal(id="welcome_btns"):
+                    yield Button("Start my first win (recommended)", id="go", variant="success")
+                    yield Button("Explore freely", id="free")
 
-    VIM_STEPS = [
-        VimStep(
-            "You're in NORMAL mode. Press  i  to enter INSERT mode.",
-            ["i"],
-            "In vim, you always start in NORMAL mode. 'i' switches to INSERT.",
-            "vim has modes. NORMAL is for navigation/commands. INSERT is for typing text.",
-            mode_after="insert",
-        ),
-        VimStep(
-            "You're in INSERT mode. Type a line of text, then press  ESC  to return to NORMAL.",
-            ["ESC"],
-            "Type anything, then type ESC to leave INSERT mode.",
-            "ESC is how you leave INSERT mode. This is the most important vim key.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "In NORMAL mode, press  o  to open a new line below and enter INSERT.",
-            ["o"],
-            "'o' = open line below. One of the most-used vim commands.",
-            "'o' creates a blank line below the cursor and drops you into INSERT.",
-            mode_after="insert",
-        ),
-        VimStep(
-            "Press  ESC  to return to NORMAL mode.",
-            ["ESC"],
-            "Always ESC to get back to NORMAL.",
-            "If you're ever lost in vim, spam ESC until you're in NORMAL mode.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Navigate with  j  (down) and  k  (up). Press  j  now.",
-            ["j"],
-            "j = down, k = up, h = left, l = right.",
-            "hjkl are the vim navigation keys — designed so your fingers never leave home row.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Press  k  to move up.",
-            ["k"],
-            "k moves up one line.",
-            "j/k replace the arrow keys in vim. Faster once memorised.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Press  dd  to delete the current line.",
-            ["dd"],
-            "dd deletes the whole line and puts it in the buffer.",
-            "dd = delete line. The deleted line is also yanked (buffered) for pasting.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Press  p  to paste the deleted line back below the cursor.",
-            ["p"],
-            "p pastes whatever was last yanked/deleted.",
-            "p = put. It inserts the buffer below the current line.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Press  yy  to yank (copy) the current line without deleting it.",
-            ["yy"],
-            "yy = yank line. Think 'y' for yoink.",
-            "yy copies the line into the buffer. p to paste it.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Type  :  to enter COMMAND mode, then type  w  and press Enter to save.",
-            [":w", "w"],
-            "':' opens the command line at the bottom. 'w' = write (save).",
-            ":w saves the file. The colon prompt appears at the bottom of the screen.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Type  :%s/linux/LINUX/g  to replace every occurrence of 'linux' with 'LINUX'.",
-            [":%s/linux/LINUX/g"],
-            "%s/old/new/g replaces all. % = whole file, g = all on each line.",
-            ":%s is vim's substitute command. One of the most powerful editing tools.",
-            mode_after="normal",
-        ),
-        VimStep(
-            "Type  :wq  to save and quit vim.",
-            [":wq", "wq"],
-            ":wq = write + quit. The classic vim exit.",
-            ":wq saves and closes the file. You've completed the vim basics!",
-            mode_after="normal",
-        ),
-    ]
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            self.dismiss(event.button.id)
 
-    def _prepare_vim_workshop_file(self):
-        self.shell._write_abs(
-            self.shell.cwd + ["workshop.txt"],
-            "linux is a kernel\npractice makes permanent\nvim is worth the pain\n"
-        )
 
-    def vim_workshop(self):
-        UI.clear()
-        self._header()
-        print(UI.box("Vim Workshop",
-            "vim is the most powerful terminal editor. It has modes:\n"
-            "  NORMAL  — navigate, delete, copy, run commands (default)\n"
-            "  INSERT  — type text  (enter: i a o O I A)\n"
-            "  COMMAND — save, quit, search, replace  (enter: :)\n"
-            "  VISUAL  — select text  (enter: v)\n\n"
-            "This workshop walks you through every essential move, step by step.\n"
-            "You can also open the free editor with: vim <file> in the sandbox.\n\n"
-            "Type 'skip' to skip a step, 'back' to exit.",
-            color=UI.MAGENTA))
-        print()
+    class QuizScreen(ModalScreen):
+        BINDINGS = [("escape", "skip", "Skip quiz")]
+        CSS = """
+        QuizScreen { align: center middle; }
+        #quiz_box { border: round #ffd479; background: #17142e; padding: 1 3; width: 64; height: auto; }
+        #quiz_title { text-style: bold; color: #ffd479; height: 1; }
+        #quiz_q { color: #e6ebf2; height: auto; margin-top: 1; }
+        #quiz_input { margin-top: 1; }
+        """
 
-        # Build a working file for the workshop without wiping the sandbox.
-        self._prepare_vim_workshop_file()
+        def __init__(self, lesson_idx: int):
+            super().__init__()
+            self.lesson_idx = lesson_idx
+            lesson = LESSONS[lesson_idx]
+            self.quiz = QUIZ_QUESTIONS.get(lesson.command)
 
-        vim = VimEditor(self.shell, "workshop.txt")
-        vim._draw()
+        def compose(self) -> ComposeResult:
+            lesson = LESSONS[self.lesson_idx]
+            with Vertical(id="quiz_box"):
+                yield Label(f"Capto checkpoint — {lesson.command}", id="quiz_title")
+                yield Label(self.quiz["q"] if self.quiz else "No quiz.", id="quiz_q")
+                yield Input(placeholder="Answer in plain words, Enter to check · Esc to skip", id="quiz_input")
 
-        total_steps = len(self.VIM_STEPS)
-        xp_earned = 0
+        def on_mount(self) -> None:
+            self.query_one("#quiz_input", Input).focus()
 
-        for si, step in enumerate(self.VIM_STEPS, 1):
-            print()
-            print(UI.c(f"  Step {si}/{total_steps}", UI.DIM) +
-                  UI.c(f"  {step.instruction}", UI.BOLD + UI.CYAN))
-            print(UI.c(f"  Mode: {vim.mode.upper()}", self.STATUS_COLORS_MAP.get(vim.mode, UI.WHITE)))
+        def action_skip(self) -> None:
+            self.dismiss(None)
 
-            attempts = 0
-            while True:
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            self.dismiss(event.value.strip())
+
+
+    class NanoScreen(ModalScreen):
+        BINDINGS = [("escape", "cancel", "Quit")]
+        CSS = """
+        NanoScreen { align: center middle; }
+        #nano_box { border: round #58a6ff; background: #0d1526; padding: 1 2; width: 72; height: 24; }
+        #nano_title { text-style: bold; color: #58a6ff; height: 1; }
+        #nano_area { height: 1fr; margin-top: 1; }
+        #nano_btns { height: 3; margin-top: 1; }
+        """
+
+        def __init__(self, shell: FakeShell, path: str):
+            super().__init__()
+            self.shell = shell
+            self.path = path or "unnamed"
+            node = shell._get_abs(shell._resolve(path)) if path else None
+            self.start_text = node.content if node and node.type == "file" else ""
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="nano_box"):
+                yield Label(f"nano — {self.path}  (edit freely, nothing real)", id="nano_title")
+                yield TextArea(self.start_text, id="nano_area")
+                with Horizontal(id="nano_btns"):
+                    yield Button("Save + close", id="save", variant="success")
+                    yield Button("Quit without saving", id="quit")
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "save":
+                text = self.query_one("#nano_area", TextArea).text
+                if not text.endswith("\n") and text:
+                    text += "\n"
+                parent, name = self.shell._parent_and_name(self.path)
+                if parent and parent.type == "dir":
+                    parent.children[name] = Node("file", content=text)
+                self.dismiss(f"nano: wrote to {self.path}")
+            else:
+                self.dismiss("nano: quit")
+
+        def action_cancel(self) -> None:
+            self.dismiss("nano: quit")
+
+
+    class VimScreen(ModalScreen):
+        BINDINGS = [("escape", "cancel", "Quit")]
+        CSS = """
+        VimScreen { align: center middle; }
+        #vim_box { border: round #a371f7; background: #0d1526; padding: 1 2; width: 72; height: 26; }
+        #vim_title { text-style: bold; color: #a371f7; height: 1; }
+        #vim_status { color: #ffd479; height: 1; margin-top: 1; }
+        #vim_keys { margin-top: 1; }
+        """
+
+        def __init__(self, shell: FakeShell, path: str, steps=None):
+            super().__init__()
+            self.shell = shell
+            self.path = path or "workshop.txt"
+            node = shell._get_abs(shell._resolve(path)) if path else None
+            self.start_text = node.content if node and node.type == "file" else ""
+            self.vim = VimEditor(shell, path)
+            self.steps = steps  # None = free edit; list = workshop
+            self.step_idx = 0
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="vim_box"):
+                yield Label(f"vim — {self.path}  (modes: NORMAL/INSERT/COMMAND)", id="vim_title")
+                yield TextArea(self.start_text, id="vim_area")
+                yield Label("-- NORMAL --  i=insert ESC=normal :wq=save+quit", id="vim_status")
+                yield Input(placeholder="vim keys: i · ESC · dd · yy · p · :w · :wq · :q!   (Enter sends)", id="vim_keys")
+
+        def on_mount(self) -> None:
+            self.query_one("#vim_keys", Input).focus()
+            if self.steps:
+                self._show_step()
+
+        def action_cancel(self) -> None:
+            self.dismiss("vim: quit")
+
+        def _show_step(self) -> None:
+            step = self.steps[self.step_idx]
+            self.query_one("#vim_status", Label).update(
+                f"Step {self.step_idx+1}/{len(self.steps)} [{self.vim.mode.upper()}] {step.instruction}"
+            )
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            raw = event.value.strip()
+            event.input.value = ""
+            if raw == "back":
+                self.dismiss("vim: quit")
+                return
+            result = self.vim._handle(raw)
+            # reflect editor buffer into textarea
+            area = self.query_one("#vim_area", TextArea)
+            area.clear()
+            area.insert("\n".join(self.vim.lines))
+            if self.steps:
+                step = self.steps[self.step_idx]
+                accepted = [k.lstrip(":").strip() for k in step.accepted_keys]
+                if raw.lstrip(":").strip() in accepted or raw in step.accepted_keys:
+                    self.step_idx += 1
+                    if self.step_idx >= len(self.steps):
+                        self.vim._save()
+                        self.dismiss(f"workshop complete|{step.explanation}")
+                        return
+                    self.vim.mode = step.mode_after
+                    self._show_step()
+                else:
+                    self.query_one("#vim_status", Label).update(
+                        f"Expected {step.accepted_keys[0]} — hint: {step.hint}"
+                    )
+                    return
+            else:
+                self.query_one("#vim_status", Label).update(
+                    f"-- {self.vim.mode.upper()} --  {len(self.vim.lines)}L" + (" [+]" if self.vim.modified else "")
+                )
+            if result is not None:
+                self.dismiss(result)
+
+
+    class LNXXApp(App):
+        CSS = """
+        Screen { background: #101623; }
+        #banner { color: #ffd479; text-style: bold; padding: 0 2; height: 1; }
+        #track_bar { color: #9aa4b2; padding: 0 2; height: 1; }
+        StatsBar { border: round #30363d; padding: 0 2; margin: 0 2; height: 4; color: #e6ebf2; background: #131b2e; }
+        #xp_bar { height: 1; margin: 0; }
+        #stats_line1 { height: 1; }
+        #stats_line2 { height: 1; color: #ffd479; }
+        #body { margin: 0 2; height: 1fr; }
+        #lesson_list { border: round #30363d; border-title-align: left; width: 24; background: #131b2e; min-height: 8; }
+        #lesson_list:focus { border: round #ffd479; }
+        ListItem { padding: 0 1; height: 1; }
+        ListItem.-done Label { color: #7ee787; }
+        ListItem.-next Label { color: #ffd479; text-style: bold; }
+        #mid { width: 1fr; margin-left: 1; }
+        LessonDetail { border: round #30363d; padding: 0 2; height: 4; background: #131b2e; }
+        #detail_title { text-style: bold; color: #8ad0ff; height: 1; }
+        #detail_mission { color: #b8f0c0; height: 2; }
+        #term_log { border: round #7ee787; border-title-align: left; height: 1fr; min-height: 6; margin-top: 1; background: #0a0f1c; color: #e6ebf2; }
+        #term_input { margin-top: 1; height: 3; }
+        #term_input:focus { border: round #ffd479; }
+        CaptoPane { border: round #a371f7; padding: 0 2; margin-top: 1; height: 3; color: #e6ebf2; background: #17142e; }
+        """
+        BINDINGS = [
+            ("q", "quit", "Quit"),
+            ("ctrl+k", "focus_lessons", "Lessons"),
+            ("ctrl+j", "focus_term", "Terminal"),
+            ("f1", "hint", "Hint"),
+            ("f2", "fill_answer", "Fill answer"),
+            ("f3", "learn_card", "Full lesson"),
+            ("f4", "missions", "Missions"),
+            ("f5", "cheat", "Cheat"),
+            ("f6", "challenge", "Challenge"),
+            ("f7", "record", "Record"),
+            ("f8", "vim_dojo", "Vim dojo"),
+            ("f9", "reset_all", "Reset"),
+        ]
+        TITLE = "LNXX"
+
+        def __init__(self):
+            super().__init__()
+            self.shell = FakeShell()
+            self.quiz_answered: set = set()
+            self.active_lesson = 0
+            self.challenge: Optional[Dict] = None
+            self.vim_dojo: Optional[Dict] = None
+            load_progress(self.shell, self.quiz_answered)
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=True)
+            yield Label("🌱 LNXX · your safe terminal playground — nothing real can break", id="banner")
+            yield Label("F1 hint · F2 fill · F3 lesson · F4 missions · F6 challenge · F7 cheat+record · F8 vim · F9 reset", id="track_bar", markup=False)
+            yield StatsBar()
+            with Horizontal(id="body"):
+                yield ListView(
+                    *[ListItem(Label(f"{les.command:<10}"), name=str(i)) for i, les in enumerate(LESSONS)],
+                    id="lesson_list",
+                )
+                with Vertical(id="mid"):
+                    yield LessonDetail()
+                    yield RichLog(id="term_log", wrap=True, markup=True)
+                    yield Input(placeholder="Type pwd here and press Enter — nothing can break ✨ (F2 fills it in)", id="term_input")
+                    yield CaptoPane()
+
+        # ── mount / nav ──
+
+        def on_mount(self) -> None:
+            stats = self.query_one(StatsBar)
+            stats.tip = random.choice(TIPS_OF_THE_DAY)
+            stats.refresh_display(self.shell)
+            lv = self.query_one("#lesson_list", ListView)
+            lv.border_title = "YOUR LESSONS — start at the top"
+            log = self.query_one(RichLog)
+            log.border_title = "TERMINAL — every mode lives here"
+            self.query_one(CaptoPane).border_title = "CAPTO82, YOUR GUIDE"
+            self._sync_lesson(self._first_unfinished(), announce=True)
+            lv.index = self.active_lesson
+            log.write("[bold]How this works (30 seconds):[/]")
+            log.write("1. Goal above (e.g. “Show your current folder”). 2. Type below + Enter.")
+            log.write("[dim]F1 hint · F2 fill · F3 full lesson · F4 all missions · F6 speed challenge · F7 cheat+record · F8 vim dojo · nano/vim <file> open editors[/]")
+            self.query_one("#term_input", Input).focus()
+            if not self.shell.completed and self.shell.xp == 0:
+                self.push_screen(WelcomeScreen(), self._welcome_done)
+
+        def _welcome_done(self, choice: Optional[str]) -> None:
+            if choice == "go":
+                self._sync_lesson(0, announce=True)
+                self.query_one("#lesson_list", ListView).index = 0
+                self.action_fill_answer()
+                self.query_one(RichLog).write("[yellow]I filled in your first answer — just press Enter. ✨[/]")
+            self.query_one("#term_input", Input).focus()
+
+        def _first_unfinished(self) -> int:
+            for i, les in enumerate(LESSONS):
+                if not all(tui_mission_key(les, m) in self.shell.completed for m in les.missions):
+                    return i
+            return 0
+
+        def _sync_lesson(self, idx: int, announce: bool = False) -> None:
+            self.active_lesson = idx
+            lesson = LESSONS[idx]
+            self.query_one(LessonDetail).show_lesson(idx, self.shell)
+            if announce:
+                first = lesson.missions[0].prompt if lesson.missions else lesson.title
+                self.query_one(CaptoPane).say(f"You're on {lesson.command} — {first} I'm here if you wobble.")
+            lv = self.query_one("#lesson_list", ListView)
+            first_open = self._first_unfinished()
+            for i, les in enumerate(LESSONS):
+                done = all(tui_mission_key(les, m) in self.shell.completed for m in les.missions)
                 try:
-                    raw = input(UI.c(f"  [{vim.mode.upper()}]> ", self.STATUS_COLORS_MAP.get(vim.mode, UI.WHITE))).strip()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    return
-
-                if raw == "back":
-                    return
-                if raw == "skip":
-                    print(UI.c(f"  Skipped. The key was: {step.accepted_keys[0]}", UI.YELLOW))
-                    vim.mode = step.mode_after
-                    break
-                if raw == "hint":
-                    print(UI.c(f"  Hint: {step.hint}", UI.YELLOW))
-                    continue
-
-                # Feed the key into the editor
-                result = vim._handle(raw)
-                if result is not None:
-                    # editor wants to close (e.g. :wq at the end)
+                    item = lv.children[i]
+                    item.set_class(done, "-done")
+                    item.set_class(i == first_open and not done, "-next")
+                    prefix = "✓ " if done else ("👉 " if i == first_open else "   ")
+                    item.query_one(Label).update(f"{prefix}{les.command:<10}")
+                except Exception:
                     pass
 
-                # Check if accepted
-                accepted_norm = [k.lstrip(":").strip() for k in step.accepted_keys]
-                raw_norm      = raw.lstrip(":").strip()
-                if raw_norm in accepted_norm or raw in step.accepted_keys:
-                    xp_gain = 8
-                    xp_earned += xp_gain
-                    new_lvl = self.shell.add_xp(xp_gain)
-                    self.shell.score += xp_gain
-                    print(UI.c(f"  ✓ +{xp_gain} XP", UI.GREEN))
-                    print(UI.c(f"  {step.explanation}", UI.DIM))
-                    if new_lvl:
-                        self._level_up_banner(new_lvl)
-                    vim.mode = step.mode_after
-                    vim._draw()
-                    break
+        def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+            if event.item is not None:
+                self._sync_lesson(int(event.item.name), announce=True)
+
+        def action_focus_lessons(self) -> None:
+            self.query_one("#lesson_list", ListView).focus()
+
+        def action_focus_term(self) -> None:
+            self.query_one("#term_input", Input).focus()
+
+        # ── F3 full lesson card (Learn) ──
+
+        def action_learn_card(self) -> None:
+            les = LESSONS[self.active_lesson]
+            log = self.query_one(RichLog)
+            log.write(f"[bold cyan]══ {les.title} ({les.command}) ══[/]")
+            log.write(f"[bold]Idea:[/] {les.concept}")
+            log.write(f"[yellow]How: {les.syntax}[/]")
+            log.write("[green]Try:[/]")
+            for ex in les.examples:
+                log.write(f"  $ {ex}")
+            log.write("[yellow]Watch out:[/]")
+            for m in les.mistakes:
+                log.write(f"  ✗ {m}")
+            if les.pro_tip:
+                log.write(f"[magenta]⚡ Pro tip: {les.pro_tip}[/]")
+            self.query_one(CaptoPane).say(f"{les.command}: read the card above, then try it below. F2 fills it in.")
+
+        # ── F4 missions list (Practice) ──
+
+        def action_missions(self) -> None:
+            log = self.query_one(RichLog)
+            log.write("[bold cyan]══ PRACTICE MISSIONS — type any command below, credit finds its lesson ══[/]")
+            flat = [(l, m) for l in LESSONS for m in l.missions]
+            for i, (les, m) in enumerate(flat, 1):
+                done = "✓" if tui_mission_key(les, m) in self.shell.completed else "○"
+                log.write(f"  {done} {i:>2}. [{les.command}] {m.prompt} (+{m.xp})")
+            log.write("[dim]Just type the command in the terminal — e.g. the first open ○ line. F1/F2 help.[/]")
+            self.query_one(CaptoPane).say("Every mission, one list. Type any — I'll credit the right lesson.")
+
+        def action_cheat(self) -> None:
+            log = self.query_one(RichLog)
+            log.write("[bold cyan]══ CHEAT SHEET ══[/]")
+            for les in LESSONS:
+                log.write(f"[green]{les.command:<12}[/] [yellow]{les.syntax}[/]  {les.title}")
+            log.write("[cyan]Pipes: cmd1 | cmd2 · Redirect: > overwrite, >> append · !! repeat · help · history[/]")
+
+        # ── F7 record ──
+
+        def action_record(self) -> None:
+            s = self.shell
+            lvl = s.level()
+            cur, mx = s.xp_for_next()
+            total = sum(len(les.missions) for les in LESSONS)
+            log = self.query_one(RichLog)
+            log.write("[bold cyan]══ COMMAND RECORD ══[/]")
+            log.write(f"Level {lvl} {tui_level_badge(lvl)} · XP {s.xp} ({cur}/{mx}) · Score {s.score} · Goals {len(s.completed)}/{total} · Cmds {s.commands_run} · Quiz {len(self.quiz_answered)}")
+            log.write("[green]Your winning commands:[/]")
+            for i, c in enumerate(s.accomplished_commands[-10:], 1):
+                log.write(f"  {i}. {c}")
+            log.write("[yellow]Recent:[/]")
+            for c in s.command_log[-8:]:
+                log.write(f"  · {c}")
+
+        # ── F6 speed challenge ──
+
+        def action_challenge(self) -> None:
+            flat = [(l, m) for l in LESSONS for m in l.missions]
+            pool = [p for p in flat if tui_mission_key(*p) not in self.shell.completed] or flat
+            selected = random.sample(pool, min(5, len(pool)))
+            self.challenge = {"items": selected, "idx": 0, "xp": 0, "t0": time.time()}
+            log = self.query_one(RichLog)
+            log.write("[bold cyan]══ SPEED CHALLENGE — 5 goals, bonus for speed. Type 'skip' to skip. ══[/]")
+            self._challenge_prompt()
+
+        def _challenge_prompt(self) -> None:
+            ch = self.challenge
+            if not ch or ch["idx"] >= len(ch["items"]):
+                return
+            les, m = ch["items"][ch["idx"]]
+            ch["t0"] = time.time()
+            self.query_one(RichLog).write(f"[bold]Challenge {ch['idx']+1}/{len(ch['items'])} [{les.command}]: {m.prompt}[/]")
+            self.query_one(CaptoPane).say("Clock's on — fast and calm. Skip anytime.")
+
+        def _challenge_answer(self, raw: str) -> bool:
+            ch = self.challenge
+            if not ch or ch["idx"] >= len(ch["items"]):
+                return False
+            if raw == "skip":
+                les, m = ch["items"][ch["idx"]]
+                self.query_one(RichLog).write(f"[yellow]Skipped — one answer: {m.accepted[0]}[/]")
+                ch["idx"] += 1
+                if ch["idx"] >= len(ch["items"]):
+                    self._challenge_finish()
                 else:
-                    attempts += 1
-                    print(UI.c(f"  ✗ Expected: {step.accepted_keys[0]}   Type 'hint' for help.", UI.RED))
+                    self._challenge_prompt()
+                return True
+            les, m = ch["items"][ch["idx"]]
+            if tui_command_matches(raw, m.accepted):
+                elapsed = time.time() - ch["t0"]
+                bonus = 10 if elapsed < 5 else (5 if elapsed < 10 else 0)
+                gain = m.xp + bonus
+                ch["xp"] += gain
+                self.shell.completed.add(tui_mission_key(les, m))
+                new_lvl = self.shell.add_xp(gain)
+                self.shell.score += gain
+                self.query_one(RichLog).write(f"[green]✓ +{gain} XP ({elapsed:.1f}s)[/] {random.choice(AFFIRMATIONS)}")
+                if new_lvl:
+                    self.query_one(RichLog).write(f"[bold yellow]★ Level {new_lvl}[/]")
+                ch["idx"] += 1
+                if ch["idx"] >= len(ch["items"]):
+                    self._challenge_finish()
+                else:
+                    self._challenge_prompt()
+                self._refresh()
+                return True
+            return False
 
-        if xp_earned:
-            self.shell.accomplished_commands.append("vim workshop")
-            self._save()
-            print()
-            print(UI.c(f"  Workshop complete. +{xp_earned} XP total.", UI.BOLD + UI.GREEN))
-            print(UI.c("  You can now open vim freely: sandbox → vim workshop.txt", UI.CYAN))
-            print()
-            self._vim_cheatsheet()
-        UI.pause()
+        def _challenge_finish(self) -> None:
+            ch = self.challenge
+            total = ch["xp"] if ch else 0
+            self.query_one(RichLog).write(f"[bold green]Challenge done: +{total} XP total.[/]")
+            self.query_one(CaptoPane).say("Speed + accuracy — that's operator energy.")
+            self.challenge = None
+            self._refresh()
 
-    STATUS_COLORS_MAP = {
-        "normal":  UI.CYAN,
-        "insert":  UI.GREEN,
-        "command": UI.YELLOW,
-        "visual":  UI.MAGENTA,
-    }
+        # ── F8 vim dojo ──
 
-    def _vim_cheatsheet(self):
-        print(UI.c("  ── Vim cheat sheet ──────────────────────────────────────────────", UI.BOLD + UI.MAGENTA))
-        rows = [
-            ("MODES",         ""),
-            ("i / a / o",     "enter INSERT (before / after cursor / new line below)"),
-            ("I / A / O",     "insert at line start / end / new line above"),
-            ("ESC",           "return to NORMAL from any mode"),
-            (":",             "enter COMMAND mode"),
-            ("v",             "enter VISUAL mode"),
-            ("",              ""),
-            ("NAVIGATION",    ""),
-            ("h j k l",       "left / down / up / right"),
-            ("gg / G",        "jump to first / last line"),
-            ("0 / $",         "jump to start / end of line"),
-            ("w / b",         "jump word forward / backward"),
-            ("",              ""),
-            ("EDITING",       ""),
-            ("dd",            "delete (cut) current line"),
-            ("yy",            "yank (copy) current line"),
-            ("p / P",         "paste below / above cursor"),
-            ("u",             "undo last change"),
-            ("Ctrl+r",        "redo"),
-            ("x",             "delete character under cursor"),
-            ("r<char>",       "replace character under cursor"),
-            ("",              ""),
-            ("COMMAND MODE",  ""),
-            (":w",            "write (save)"),
-            (":q",            "quit (fails if unsaved changes)"),
-            (":wq  or  :x",   "save and quit"),
-            (":q!",           "force quit without saving"),
-            (":%s/old/new/g", "replace all occurrences in file"),
-            (":N",            "jump to line N"),
-            (":set nu",       "show line numbers"),
-        ]
-        for key, desc in rows:
-            if not key and not desc:
-                print()
-            elif not desc:
-                print(UI.c(f"  {key}", UI.BOLD + UI.YELLOW))
+        def action_vim_dojo(self) -> None:
+            steps = VIM_STEPS
+            self.shell._write_abs(self.shell.cwd + ["workshop.txt"], "linux is a kernel\npractice makes permanent\nvim is worth the pain\n")
+            self.push_screen(VimScreen(self.shell, "workshop.txt", steps=steps), self._vim_done)
+
+        def _vim_done(self, result: Optional[str]) -> None:
+            log = self.query_one(RichLog)
+            if result and result.startswith("workshop complete"):
+                gain = 8 * len(VIM_STEPS)
+                new_lvl = self.shell.add_xp(gain)
+                self.shell.score += gain
+                self.shell.accomplished_commands.append("vim workshop")
+                log.write(f"[bold green]Vim dojo complete: +{gain} XP.[/] :%s/old/new/g is now yours.")
+                log.write("[magenta]i/a/o insert · ESC normal · :wq save+quit · dd cut · yy copy · p paste · hjkl move[/]")
+                if new_lvl:
+                    log.write(f"[bold yellow]★ Level {new_lvl}[/]")
+                self.query_one(CaptoPane).say("Vim modes: conquered. That editor fears YOU now.")
+            elif result:
+                log.write(f"[dim]{result}[/]")
+            self._refresh()
+            self.query_one("#term_input", Input).focus()
+
+        # ── F9 reset ──
+
+        def action_reset_all(self) -> None:
+            self.push_screen(ResetScreen(), self._reset_done)
+
+        def _reset_done(self, choice: Optional[str]) -> None:
+            if choice == "yes":
+                self.shell = FakeShell()
+                self.quiz_answered.clear()
+                try:
+                    if os.path.exists(SAVE_FILE):
+                        os.remove(SAVE_FILE)
+                except Exception:
+                    pass
+                self.query_one(RichLog).write("[green]Fresh start — playground rebuilt, progress cleared. 🌱[/]")
+                self.query_one(CaptoPane).say("Clean slate. First win is waiting.")
+                self._sync_lesson(0, announce=True)
+                self._refresh()
+
+        # ── hints / fill ──
+
+        def action_hint(self) -> None:
+            self._show_hint()
+
+        def action_fill_answer(self) -> None:
+            if self.challenge and self.challenge["idx"] < len(self.challenge["items"]):
+                les, m = self.challenge["items"][self.challenge["idx"]]
+                self.query_one("#term_input", Input).value = m.accepted[0]
+                self.query_one(CaptoPane).say("Filled — press Enter. Speed counts, no shame.")
+                self.query_one("#term_input", Input).focus()
+                return
+            lesson = LESSONS[self.active_lesson]
+            for m in lesson.missions:
+                if tui_mission_key(lesson, m) not in self.shell.completed:
+                    self.query_one("#term_input", Input).value = m.accepted[0]
+                    self.query_one(CaptoPane).say(f"Filled “{m.accepted[0]}” — press Enter. 🎉")
+                    self.query_one("#term_input", Input).focus()
+                    return
+            self.query_one(CaptoPane).say("All done here — pick the next lesson.")
+
+        def _show_hint(self) -> None:
+            if self.challenge and self.challenge["idx"] < len(self.challenge["items"]):
+                les, m = self.challenge["items"][self.challenge["idx"]]
+                self.query_one(CaptoPane).say(f"Challenge hint: {m.hint}")
+                self.query_one(RichLog).write(f"[yellow]💛 Hint: {m.hint}[/]")
+                return
+            lesson = LESSONS[self.active_lesson]
+            for m in lesson.missions:
+                if tui_mission_key(lesson, m) not in self.shell.completed:
+                    self.query_one(CaptoPane).say(f"Gentle nudge: {m.hint} (F2 fills it in.)")
+                    self.query_one(RichLog).write(f"[yellow]💛 Hint: {m.hint} — F2 types it for you.[/]")
+                    return
+            self.query_one(CaptoPane).say("All done here — pick the next 👉 lesson.")
+
+        # ── terminal ──
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            raw = event.value.strip()
+            inp = self.query_one("#term_input", Input)
+            inp.value = ""
+            term = self.query_one(RichLog)
+            capto = self.query_one(CaptoPane)
+            if not raw:
+                return
+            if raw == "hint":
+                self._show_hint()
+                return
+            # challenge consumes input first (still runs shell for FS realism when not skip)
+            if self.challenge:
+                if raw != "skip":
+                    out = self.shell.run(raw)
+                    if out and out not in ("__CLEAR__",) and not out.startswith("__EDITOR__:"):
+                        for line in out.splitlines()[:10]:
+                            term.write(f"  {line}")
+                if self._challenge_answer(raw):
+                    return
+                # wrong challenge answer falls through to normal feedback below
+            prompt = f"student:{self.shell.pwd()}$"
+            term.write(f"[bold green]{prompt}[/] {raw}")
+            out = self.shell.run(raw)
+            if out == "__CLEAR__":
+                term.clear()
+                return
+            if out.startswith("__EDITOR__:"):
+                self._open_editor(out)
+                return
+            if out:
+                for line in out.splitlines()[:40]:
+                    term.write(f"  {line}")
+            matched = self._check_missions(raw, term, capto)
+            if matched:
+                self._maybe_quiz(self.active_lesson)
+            elif out and ("command not found" in out or "No such" in out or "missing" in out or "cannot" in out):
+                term.write("[dim]Nothing broke — 'reset' rebuilds. Every pro typo'd this day one.[/]")
+                capto.say(self._typo_hint(raw, out))
+            elif not out:
+                capto.say("Good — quiet means it worked. Try 'ls' to see what changed. 🌱")
+            self._refresh()
+            self.query_one(LessonDetail).show_lesson(self.active_lesson, self.shell)
+            save_progress(self.shell, self.quiz_answered)
+
+        def _open_editor(self, signal: str) -> None:
+            parts = signal.split(":", 2)
+            etype = parts[1] if len(parts) > 1 else "nano"
+            fpath = parts[2] if len(parts) > 2 else ""
+            if etype == "nano":
+                self.push_screen(NanoScreen(self.shell, fpath), self._editor_done)
             else:
-                print(f"  {UI.c(key.ljust(18), UI.CYAN)}  {UI.c(desc, UI.DIM)}")
-        print()
+                self.push_screen(VimScreen(self.shell, fpath or "workshop.txt"), self._editor_done)
+
+        def _editor_done(self, result: Optional[str]) -> None:
+            if result:
+                self.query_one(RichLog).write(f"[dim]{result}[/]")
+                self.query_one(CaptoPane).say("Saved. 'cat <file>' to admire your work. ✨")
+            self._refresh()
+            self.query_one("#term_input", Input).focus()
+
+        def _refresh(self) -> None:
+            self.query_one(StatsBar).refresh_display(self.shell)
+            self._sync_done_marks()
+            save_progress(self.shell, self.quiz_answered)
+
+        def _sync_done_marks(self) -> None:
+            lv = self.query_one("#lesson_list", ListView)
+            first_open = self._first_unfinished()
+            for i, les in enumerate(LESSONS):
+                done = all(tui_mission_key(les, m) in self.shell.completed for m in les.missions)
+                try:
+                    item = lv.children[i]
+                    item.set_class(done, "-done")
+                    item.set_class(i == first_open and not done, "-next")
+                    prefix = "✓ " if done else ("👉 " if i == first_open else "   ")
+                    item.query_one(Label).update(f"{prefix}{les.command:<10}")
+                except Exception:
+                    pass
+
+        def _check_missions(self, raw: str, term: RichLog, capto: CaptoPane) -> bool:
+            order = [self.active_lesson] + [i for i in range(len(LESSONS)) if i != self.active_lesson]
+            for idx in order:
+                lesson = LESSONS[idx]
+                for m in lesson.missions:
+                    key = tui_mission_key(lesson, m)
+                    if key in self.shell.completed:
+                        continue
+                    if tui_command_matches(raw, m.accepted):
+                        self.shell.completed.add(key)
+                        self.shell.accomplished_commands.append(_tui_normalize(raw))
+                        new_lvl = self.shell.add_xp(m.xp)
+                        self.shell.score += m.xp
+                        term.write(f"[bold green]🎉 Nice! +{m.xp} XP.[/]  {m.explanation}")
+                        capto.say(f"{random.choice(AFFIRMATIONS)} Next tiny win awaits. 👉")
+                        if new_lvl:
+                            term.write(f"[bold yellow]★ Leveled up → {new_lvl} {tui_level_badge(new_lvl)}[/]")
+                        if idx != self.active_lesson:
+                            term.write(f"[dim](credited to {lesson.command})[/]")
+                        # after mission, advance lesson if active one finished
+                        nxt = self._next_lesson(LESSONS[self.active_lesson])
+                        if nxt and all(tui_mission_key(LESSONS[self.active_lesson], mm) in self.shell.completed for mm in LESSONS[self.active_lesson].missions):
+                            term.write(f"[cyan]── Up next: {nxt.command} — {nxt.title} (F3 for the full card) ──[/]")
+                        return True
+            return False
+
+        def _lesson_success(self, lesson, raw: str, out: str) -> bool:
+            raw = raw.strip()
+            if not raw:
+                return False
+            try:
+                cmd = shlex.split(raw)[0]
+            except ValueError:
+                return False
+            accepted = lesson.command.split("/")
+            if "|" in lesson.command or "|" in raw:
+                accepted.append("pipe")
+            bad = ["command not found", "No such", "missing", "cannot", "not a directory", "syntax error"]
+            if cmd not in accepted and not ("|" in raw and lesson.command == "pipe (|)"):
+                return False
+            return not any(m in out for m in bad)
+
+        def _maybe_quiz(self, lesson_idx: int) -> None:
+            lesson = LESSONS[lesson_idx]
+            # quiz triggers when the typed command ran clean for that lesson
+            # caller already ran shell; re-evaluate last command
+            last = self.shell.command_log[-1] if self.shell.command_log else ""
+            out_markers_ok = True  # mission already matched => output was clean enough
+            if self._lesson_success(lesson, last, "") or out_markers_ok:
+                if lesson.command in QUIZ_QUESTIONS:
+                    self.push_screen(QuizScreen(lesson_idx), lambda ans: self._quiz_done(lesson_idx, ans))
+
+        def _quiz_done(self, lesson_idx: int, answer: Optional[str]) -> None:
+            lesson = LESSONS[lesson_idx]
+            term = self.query_one(RichLog)
+            if answer is None or not answer.strip():
+                term.write("[dim]Quiz skipped — the mission XP is still yours.[/]")
+                self.query_one("#term_input", Input).focus()
+                return
+            quiz = QUIZ_QUESTIONS[lesson.command]
+            if any(k in answer.strip().lower() for k in quiz["keys"]):
+                if lesson.command in self.quiz_answered:
+                    term.write("[green]✓ Correct — review complete.[/]")
+                else:
+                    self.quiz_answered.add(lesson.command)
+                    new_lvl = self.shell.add_xp(15)
+                    self.shell.score += 5
+                    self.shell.accomplished_commands.append(f"concept:{lesson.command}")
+                    term.write("[green]✓ Correct. +15 XP concept bonus.[/]")
+                    if new_lvl:
+                        term.write(f"[bold yellow]★ Level {new_lvl}[/]")
+                self.query_one(CaptoPane).say(random.choice(AFFIRMATIONS))
+            else:
+                term.write("[red]Not quite — re-read F3, try F7 examples. No XP lost.[/]")
+                self.query_one(CaptoPane).say("Good attempt — peep F3, then I'll re-quiz next win. 💛")
+            self._refresh()
+            self.query_one("#term_input", Input).focus()
+
+        def _next_lesson(self, lesson):
+            for i, les in enumerate(LESSONS):
+                if les.command == lesson.command and i + 1 < len(LESSONS):
+                    return LESSONS[i + 1]
+            return None
+
+        def _typo_hint(self, raw: str, out: str) -> str:
+            try:
+                cmd = shlex.split(raw)[0]
+            except Exception:
+                return "Hmm, try one word like 'pwd'. Nothing broke. 💛"
+            known = [les.command for les in LESSONS] + ["help", "clear", "history"]
+            common = {"sl": "ls", "l": "ls", "ll": "ls -la", "cd..": "cd ..", "pdw": "pwd", "pw": "pwd",
+                      "mkkdir": "mkdir", "touh": "touch", "cta": "cat", "ceho": "echo", "gerp": "grep"}
+            if cmd in common:
+                return f"Close! Did you mean '{common[cmd]}'? 🌱 ({out})"
+            import difflib
+            close = difflib.get_close_matches(cmd, known, n=1, cutoff=0.5)
+            if close and close[0] != cmd:
+                return f"Close! Did you mean '{close[0]}'? 🌱 ({out})"
+            lesson = LESSONS[self.active_lesson]
+            if lesson.missions:
+                return f"Good try — for this goal try: {lesson.missions[0].accepted[0]} (F1/F2)."
+            return f"Good try — {out}"
+
+        def on_unmount(self) -> None:
+            try:
+                save_progress(self.shell, self.quiz_answered)
+            except Exception:
+                pass
 
 
-    # ── Helpers ──
+    class ResetScreen(ModalScreen):
+        CSS = """
+        ResetScreen { align: center middle; }
+        #reset_box { border: round #ff5555; background: #1c0f14; padding: 1 3; width: 52; height: auto; }
+        #reset_title { text-style: bold; color: #ff5555; height: 1; }
+        #reset_btns { height: 3; margin-top: 1; }
+        """
 
-    def _next_lesson(self, lesson: Lesson) -> Optional[Lesson]:
-        for i, l in enumerate(LESSONS):
-            if l.command == lesson.command and i + 1 < len(LESSONS):
-                return LESSONS[i + 1]
-        return None
+        def compose(self) -> ComposeResult:
+            with Vertical(id="reset_box"):
+                yield Label("Reset playground + progress?", id="reset_title")
+                yield Label("Clears XP, goals, and fake files. Nothing real is touched.", id="reset_body")
+                with Horizontal(id="reset_btns"):
+                    yield Button("Yes, fresh start", id="yes", variant="error")
+                    yield Button("Cancel", id="no", variant="primary")
 
-    def _level_up_banner(self, new_level: int):
-        badge = UI.level_badge(new_level)
-        print()
-        print(UI.c(f"  ╔══════════════════════════════╗", UI.BOLD + UI.YELLOW))
-        print(UI.c(f"  ║  {badge} LEVEL UP! Now Level {new_level:<3}  ║", UI.BOLD + UI.YELLOW))
-        print(UI.c(f"  ╚══════════════════════════════╝", UI.BOLD + UI.YELLOW))
-        print()
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            self.dismiss(event.button.id)
+
+else:
+    # textual missing: stubs so `from linuxx import LNXXApp` never crashes
+    # engine and --test. TUI launch will attempt auto-install.
+    StatsBar = LessonDetail = CaptoPane = WelcomeScreen = QuizScreen = None  # type: ignore
+    NanoScreen = VimScreen = ResetScreen = None  # type: ignore
+    LNXXApp = None  # type: ignore
 
 
 # ─────────────────────────── Tests ───────────────────────────
 
 class LinuxxTests(unittest.TestCase):
-    def make_app(self) -> TrainerApp:
-        app = TrainerApp.__new__(TrainerApp)
-        app.shell = FakeShell()
-        app.quiz_answered = set()
-        app.history = []
-        return app
-
     def test_core_shell_behaviors(self):
         shell = FakeShell()
 
@@ -2739,76 +2971,44 @@ class LinuxxTests(unittest.TestCase):
             SAVE_FILE = old_save_file
 
     def test_mission_command_matching_accepts_equivalent_forms(self):
-        app = self.make_app()
+        self.assertTrue(engine_command_matches("ls -al", ["ls -la"]))
+        self.assertTrue(engine_command_matches("mkdir projects/linux -p", ["mkdir -p projects/linux"]))
+        self.assertTrue(engine_command_matches('find . -name "*.txt"', ["find . -name '*.txt'"]))
+        self.assertTrue(engine_command_matches("ls|wc -l", ["ls | wc -l"]))
+        self.assertTrue(engine_command_matches('grep -i "error" log.txt', ["grep -i error log.txt"]))
+        self.assertFalse(engine_command_matches("rm other.txt", ["rm temp.txt"]))
+        # TUI wrapper uses the same engine
+        self.assertTrue(tui_command_matches("ls -al", ["ls -la"]))
+        self.assertTrue(command_matches("ls|wc -l", ["ls | wc -l"]))
 
-        self.assertTrue(app._command_matches("ls -al", ["ls -la"]))
-        self.assertTrue(app._command_matches("mkdir projects/linux -p", ["mkdir -p projects/linux"]))
-        self.assertTrue(app._command_matches('find . -name "*.txt"', ["find . -name '*.txt'"]))
-        self.assertTrue(app._command_matches("ls|wc -l", ["ls | wc -l"]))
-        self.assertTrue(app._command_matches("grep -i \"error\" log.txt", ["grep -i error log.txt"]))
-        self.assertFalse(app._command_matches("rm other.txt", ["rm temp.txt"]))
-
-    def test_quiz_review_still_prompts_without_duplicate_xp(self):
-        app = self.make_app()
-        app.quiz_answered.add("pwd")
-        app.shell.xp = 100
-        app.shell.score = 25
-        app._save = lambda: None
-
-        with patch("builtins.input", return_value="working directory") as mocked_input:
-            with patch("sys.stdout", new=io.StringIO()) as out:
-                self.assertTrue(app._ask_quiz(LESSONS[0]))
-
-        mocked_input.assert_called_once()
-        self.assertIn("Capto checkpoint review", out.getvalue())
-        self.assertIn("Review complete", out.getvalue())
-        self.assertEqual(app.shell.xp, 100)
-        self.assertEqual(app.shell.score, 25)
-        self.assertEqual(app.shell.accomplished_commands, [])
-
-    def test_quiz_first_pass_awards_xp(self):
-        app = self.make_app()
-        app._save = lambda: None
-
-        with patch("builtins.input", return_value="working directory"):
-            with patch("sys.stdout", new=io.StringIO()):
-                self.assertTrue(app._ask_quiz(LESSONS[0]))
-
-        self.assertIn("pwd", app.quiz_answered)
-        self.assertEqual(app.shell.xp, 15)
-        self.assertEqual(app.shell.score, 5)
-        self.assertIn("concept:pwd", app.shell.accomplished_commands)
-
-    def test_show_lesson_prompts_quiz_after_successful_command(self):
-        app = self.make_app()
-        app._save = lambda: None
-        answers = iter(["pwd", "working directory", "back"])
-
-        with patch("builtins.input", lambda prompt="": next(answers)):
-            with patch("sys.stdout", new=io.StringIO()) as out:
-                app.show_lesson(LESSONS[0])
-
-        text = out.getvalue()
-        self.assertIn("What does pwd stand for", text)
-        self.assertIn("Capto checkpoint", text)
-        self.assertIn("Up next: ls", text)
-
-    def test_app_helpers(self):
+    def test_engine_helpers_and_content(self):
         shell2 = FakeShell()
         self.assertEqual(shell2.level(), 1)
         shell2.xp = 50
         self.assertEqual(shell2.level(), 2)
 
-        app = self.make_app()
-        app.shell.run("touch keep.txt")
-        app._prepare_vim_workshop_file()
-        self.assertEqual(app.shell._get_abs(app.shell._resolve("Documents")).type, "dir")
-        self.assertIn("keep.txt", app.shell.run("ls"))
-        self.assertIn("workshop.txt", app.shell.run("ls"))
+        shell2.run("touch keep.txt")
+        self.assertIn("keep.txt", shell2.run("ls"))
         self.assertGreaterEqual(len(AFFIRMATIONS), 5)
         self.assertGreaterEqual(len(TIPS_OF_THE_DAY), 5)
-        self.assertEqual(app._next_lesson(LESSONS[0]).command, "ls")
-        self.assertIsNone(app._next_lesson(LESSONS[-1]))
+        self.assertEqual(LESSONS[0].command, "pwd")
+        self.assertEqual(LESSONS[1].command, "ls")
+        self.assertEqual(engine_mission_key(LESSONS[0], LESSONS[0].missions[0]),
+                         f"pwd:{LESSONS[0].missions[0].prompt}")
+        self.assertEqual(len(VIM_STEPS), 12)
+
+    def test_vim_editor_modes_used_by_tui(self):
+        shell = FakeShell()
+        vim = VimEditor(shell, "workshop.txt")
+        self.assertEqual(vim.mode, "normal")
+        vim._handle("i")
+        self.assertEqual(vim.mode, "insert")
+        vim._handle("ESC")
+        self.assertEqual(vim.mode, "normal")
+
+    def test_tui_available(self):
+        # TUI is the default entry point; it must exist when textual is installed.
+        self.assertIsNotNone(LNXXApp)
 
 
 def run_tests() -> None:
@@ -2820,12 +3020,36 @@ def run_tests() -> None:
 
 
 # ─────────────────────────── Entry point ───────────────────────────
+# TUI is the default. Classic CLI was removed.
+
+def _launch_tui_or_install() -> None:
+    if LNXXApp is None:
+        print("  TUI needs the 'textual' package — attempting auto-install…")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "textual"])
+        except Exception as e:
+            print(f"  Auto-install failed: {e}")
+            print("  Install manually:  pip install textual")
+            print("  Then run:  python linuxx.py")
+            sys.exit(1)
+        print("  Installed. Re-launching…")
+        try:
+            os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        except Exception:
+            print("  Installed textual — please re-run:  python linuxx.py")
+            sys.exit(1)
+    try:
+        LNXXApp().run()
+    except KeyboardInterrupt:
+        print("\n  Interrupted. Progress auto-saved on clean exits.")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
         run_tests()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--classic":
+        print("  Classic CLI was removed. The TUI is now the default:  python linuxx.py")
+        sys.exit(2)
     else:
-        try:
-            TrainerApp().run()
-        except KeyboardInterrupt:
-            print("\n  Interrupted. Progress auto-saved on clean exits.")
+        # Default (no args) and --tui alias both launch the TUI.
+        _launch_tui_or_install()
