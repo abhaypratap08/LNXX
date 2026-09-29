@@ -34,9 +34,12 @@ if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv "$VENV"
 fi
 
-echo "  installing LNXX dependencies..."
-"$VENV/bin/python" -m pip install --disable-pip-version-check --quiet --upgrade pip
-"$VENV/bin/python" -m pip install --disable-pip-version-check --quiet textual
+echo "  preparing LNXX dependencies..."
+if ! "$VENV/bin/python" -m pip install --disable-pip-version-check --quiet textual >/dev/null 2>&1; then
+  echo "  error: could not install LNXX dependencies."
+  echo "  check your internet connection and Python installation, then run the installer again."
+  exit 1
+fi
 
 LAUNCHER="$HOME/.local/bin/lnxx"
 mkdir -p "$HOME/.local/bin"
