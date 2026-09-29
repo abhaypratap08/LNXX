@@ -3024,19 +3024,28 @@ def run_tests() -> None:
 
 def _launch_tui_or_install() -> None:
     if LNXXApp is None:
-        print("  TUI needs the 'textual' package — attempting auto-install…")
+        base = os.path.dirname(os.path.abspath(__file__))
+        venv = os.path.join(base, ".venv")
+        venv_python = os.path.join(venv, "bin", "python")
+        if os.name == "nt":
+            venv_python = os.path.join(venv, "Scripts", "python.exe")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "textual"])
-        except Exception as e:
-            print(f"  Auto-install failed: {e}")
-            print("  Install manually:  pip install textual")
-            print("  Then run:  python linuxx.py")
-            sys.exit(1)
-        print("  Installed. Re-launching…")
-        try:
-            os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+            if not os.path.exists(venv_python):
+                print("  setting up LNXX…")
+                subprocess.check_call([sys.executable, "-m", "venv", venv],
+                                      stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
+            print("  preparing LNXX…")
+            subprocess.check_call(
+                [venv_python, "-m", "pip", "install", "--disable-pip-version-check",
+                 "--quiet", "textual"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            os.execv(venv_python, [venv_python, os.path.abspath(__file__)] + sys.argv[1:])
         except Exception:
-            print("  Installed textual — please re-run:  python linuxx.py")
+            print("  LNXX could not prepare its private environment.")
+            print("  Please check that Python 3 and the venv module are installed.")
             sys.exit(1)
     try:
         LNXXApp().run()
