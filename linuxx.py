@@ -2776,7 +2776,8 @@ if _TEXTUAL_AVAILABLE:
                         )
                         if lesson_done:
                             term.write("[bold cyan]🎯 Lesson complete! You can continue linearly or choose a different path.[/]")
-                            self._offer_paths(idx)
+                            if lesson.command not in QUIZ_QUESTIONS:
+                                self._offer_paths(idx)
                         return True
             return False
 
