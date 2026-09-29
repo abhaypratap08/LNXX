@@ -2158,6 +2158,44 @@ if _TEXTUAL_AVAILABLE:
             self.dismiss(event.button.id)
 
 
+    LEARNING_PATHS = {
+        "foundations": ("🌱 Linux Foundations", "pwd → ls → cd → mkdir → touch", ["pwd", "ls", "cd", "mkdir", "touch"]),
+        "files": ("📁 Files & Text", "cat → echo → cp → mv → rm", ["cat", "echo", "cp", "mv", "rm"]),
+        "search": ("🔎 Search & Text Processing", "grep → find → wc → head/tail", ["grep", "find", "wc", "head/tail"]),
+        "system": ("⚙️ Permissions & Processes", "chmod → ps/kill", ["chmod", "ps/kill"]),
+        "shell": ("🔗 Shell Power", "pipes and command composition", ["pipe (|)"]),
+    }
+
+
+    class PathChoiceScreen(ModalScreen):
+        CSS = """
+        PathChoiceScreen { align: center middle; }
+        #path_box { border: round #58a6ff; background: #0d1526; padding: 1 2; width: 76; height: auto; }
+        #path_title { text-style: bold; color: #7ee787; height: 1; }
+        #path_body { color: #c9d1d9; height: auto; margin: 1 0; }
+        .path_btn { width: 100%; margin: 0 0 1 0; }
+        """
+
+        def __init__(self, paths):
+            super().__init__()
+            self.paths = paths
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="path_box"):
+                yield Label("🎯 Lesson complete — choose your next path", id="path_title")
+                yield Label(
+                    "You don't have to follow one fixed order. Pick what you want to learn next:",
+                    id="path_body",
+                )
+                for key, title, desc in self.paths:
+                    yield Button(f"{title}  ·  {desc}", id=f"path:{key}", classes="path_btn")
+                yield Button("🧭 Free Explore — show all unfinished lessons", id="path:free", classes="path_btn")
+                yield Button("⚡ Speed Challenge — practice randomly", id="path:challenge", classes="path_btn")
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            self.dismiss(event.button.id.split(":", 1)[1])
+
+
     class QuizScreen(ModalScreen):
         BINDINGS = [("escape", "skip", "Skip quiz")]
         CSS = """
@@ -2732,12 +2770,61 @@ if _TEXTUAL_AVAILABLE:
                             term.write(f"[bold yellow]★ Leveled up → {new_lvl} {tui_level_badge(new_lvl)}[/]")
                         if idx != self.active_lesson:
                             term.write(f"[dim](credited to {lesson.command})[/]")
-                        # after mission, advance lesson if active one finished
-                        nxt = self._next_lesson(LESSONS[self.active_lesson])
-                        if nxt and all(tui_mission_key(LESSONS[self.active_lesson], mm) in self.shell.completed for mm in LESSONS[self.active_lesson].missions):
-                            term.write(f"[cyan]── Up next: {nxt.command} — {nxt.title} (F3 for the full card) ──[/]")
+                        lesson_done = all(
+                            tui_mission_key(lesson, mm) in self.shell.completed
+                            for mm in lesson.missions
+                        )
+                        if lesson_done:
+                            term.write("[bold cyan]🎯 Lesson complete! You can continue linearly or choose a different path.[/]")
+                            self._offer_paths(idx)
                         return True
             return False
+
+        def _offer_paths(self, completed_idx: int) -> None:
+            available = []
+            for key, (title, desc, commands) in self.LEARNING_PATHS.items():
+                remaining = [
+                    (i, les) for i, les in enumerate(LESSONS)
+                    if les.command in commands
+                    and not all(tui_mission_key(les, m) in self.shell.completed for m in les.missions)
+                ]
+                if remaining:
+                    available.append((key, title, desc))
+            self.push_screen(PathChoiceScreen(available), self._path_selected)
+
+        def _path_selected(self, choice: Optional[str]) -> None:
+            if not choice:
+                self.query_one("#term_input", Input).focus()
+                return
+            if choice == "challenge":
+                self.action_challenge()
+                return
+            if choice == "free":
+                idx = self._first_unfinished()
+                self._sync_lesson(idx, announce=True)
+                self.query_one("#lesson_list", ListView).index = idx
+                self.query_one("#term_input", Input).focus()
+                self.query_one(CaptoPane).say("Free Explore unlocked. Pick any unfinished lesson from the left. 🧭")
+                return
+            path = self.LEARNING_PATHS.get(choice)
+            if not path:
+                self.query_one("#term_input", Input).focus()
+                return
+            commands = path[2]
+            candidates = [
+                i for i, les in enumerate(LESSONS)
+                if les.command in commands
+                and not all(tui_mission_key(les, m) in self.shell.completed for m in les.missions)
+            ]
+            if not candidates:
+                self.query_one(CaptoPane).say("That path is complete. Pick another route. 🎉")
+                self._offer_paths(self.active_lesson)
+                return
+            idx = candidates[0]
+            self._sync_lesson(idx, announce=True)
+            self.query_one("#lesson_list", ListView).index = idx
+            self.query_one("#term_input", Input).focus()
+            self.query_one(CaptoPane).say(f"Path selected: {path[0]}. Your next target is {LESSONS[idx].command}. 🚀")
 
         def _lesson_success(self, lesson, raw: str, out: str) -> bool:
             raw = raw.strip()
@@ -2789,7 +2876,10 @@ if _TEXTUAL_AVAILABLE:
                 term.write("[red]Not quite — re-read F3, try F7 examples. No XP lost.[/]")
                 self.query_one(CaptoPane).say("Good attempt — peep F3, then I'll re-quiz next win. 💛")
             self._refresh()
-            self.query_one("#term_input", Input).focus()
+            if all(tui_mission_key(lesson, m) in self.shell.completed for m in lesson.missions):
+                self._offer_paths(lesson_idx)
+            else:
+                self.query_one("#term_input", Input).focus()
 
         def _next_lesson(self, lesson):
             for i, les in enumerate(LESSONS):
